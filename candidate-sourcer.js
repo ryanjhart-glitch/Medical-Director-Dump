@@ -10,7 +10,7 @@ const { sendDailyReport } = require('./mailer');
  * Returns an array of candidate objects, or [] if API key is missing/fails.
  */
 async function fetchApolloCandiates() {
-  const apiKey = process.env.APOLLO_API_KEY;
+  const apiKey = (process.env.APOLLO_API_KEY || '').trim();
   if (!apiKey || apiKey === 'your-apollo-api-key-here') return [];
 
   const body = JSON.stringify({
