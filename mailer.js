@@ -39,9 +39,11 @@ async function sendDailyReport(addedCount, totalCount, newCandidates) {
           <td style="padding:6px 12px;border-bottom:1px solid #eee">${c.location}</td>
           <td style="padding:6px 12px;border-bottom:1px solid #eee">${c.experience}</td>
           <td style="padding:6px 12px;border-bottom:1px solid #eee">${c.source}</td>
+          <td style="padding:6px 12px;border-bottom:1px solid #eee">${c.email ? `<a href="mailto:${c.email}">${c.email}</a>` : '—'}</td>
+          <td style="padding:6px 12px;border-bottom:1px solid #eee">${c.linkedinUrl ? `<a href="${c.linkedinUrl}" target="_blank">View Profile</a>` : '—'}</td>
         </tr>`
       ).join('')
-    : '<tr><td colspan="5" style="padding:12px;color:#888;text-align:center">No new candidates found today.</td></tr>';
+    : '<tr><td colspan="7" style="padding:12px;color:#888;text-align:center">No new candidates found today.</td></tr>';
 
   const html = `
     <div style="font-family:sans-serif;max-width:700px;margin:auto">
@@ -55,6 +57,8 @@ async function sendDailyReport(addedCount, totalCount, newCandidates) {
           <th style="padding:8px 12px;text-align:left">Location</th>
           <th style="padding:8px 12px;text-align:left">Experience</th>
           <th style="padding:8px 12px;text-align:left">Source</th>
+          <th style="padding:8px 12px;text-align:left">Email</th>
+          <th style="padding:8px 12px;text-align:left">LinkedIn</th>
         </tr>
         ${newRows}
       </table>
