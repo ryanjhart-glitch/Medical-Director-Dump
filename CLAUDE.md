@@ -95,7 +95,18 @@ Dr. Sarah Johnson,Medical Director,California,8 years,LinkedIn,2026-03-11
 
 ---
 
-## Windows Task Scheduler (Daily Automation)
+## Daily Automation — GitHub Actions (Primary Method)
+
+The workflow file is at `.github/workflows/daily-sourcer.yml`.
+
+- Runs automatically every day at **7 AM Eastern / 6 AM Central** via cron (`0 12 * * *` UTC).
+- Can also be triggered manually from the GitHub UI via `workflow_dispatch`.
+- After each run, commits the updated `candidates.csv` back to the repo automatically.
+- Email credentials are stored as **GitHub Secrets** (not in `.env`): `EMAIL_FROM`, `EMAIL_APP_PASSWORD`, `EMAIL_TO`.
+
+To change the run time, edit the `cron` value in the workflow file. Use crontab.guru to build cron expressions.
+
+## Windows Task Scheduler (Alternative — Local Machine)
 
 The `run.bat` file:
 1. `cd`s to the repo folder (resolves relative paths correctly regardless of Task Scheduler's working directory).
