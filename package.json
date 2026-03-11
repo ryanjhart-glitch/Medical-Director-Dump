@@ -1,0 +1,13 @@
+{
+  "name": "medical-director-sourcer",
+  "version": "1.0.0",
+  "description": "Daily automated sourcing tool for Veterinarian Medical Director candidates",
+  "main": "candidate-sourcer.js",
+  "scripts": {
+    "start": "node candidate-sourcer.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "nodemailer": "^6.9.13"
+  }
+}

@@ -1,0 +1,37 @@
+name: Daily Candidate Sourcer
+
+on:
+  schedule:
+    - cron: '0 12 * * *'  # Runs at 7 AM Eastern / 6 AM Central every day
+  workflow_dispatch:       # Lets you run it manually from GitHub with a button click
+
+jobs:
+  source-candidates:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run candidate sourcer
+        env:
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+        run: node candidate-sourcer.js
+
+      - name: Save updated candidates back to repo
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add candidates.csv
+          git diff --staged --quiet || git commit -m "chore: update candidates.csv from daily run"
+          git push
