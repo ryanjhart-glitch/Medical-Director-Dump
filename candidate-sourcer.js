@@ -123,8 +123,6 @@ class CandidateSourcer {
     console.log('🔍 Starting candidate sourcing...');
     console.log(`📍 Searching for: ${config.searchKeywords}`);
 
-    const DAILY_BATCH_SIZE = 5;
-
     // Try Apollo.io first; fall back to simulated pool if not configured
     const apolloCandidates = await fetchApolloCandiates();
 
@@ -200,8 +198,8 @@ class CandidateSourcer {
       )
     );
 
-    const batch = unseen.slice(0, DAILY_BATCH_SIZE);
-    console.log(`📋 ${unseen.length} unseen candidates in pool — sourcing ${batch.length} today.`);
+    const batch = unseen;
+    console.log(`📋 ${unseen.length} unseen candidates in pool — sourcing all ${batch.length} now.`);
 
     const newCandidates = [];
     for (const candidate of batch) {
@@ -213,7 +211,7 @@ class CandidateSourcer {
     console.log(`\n✅ Sourcing complete! Added ${newCandidates.length} new candidates.`);
     console.log(`📊 Total candidates: ${this.candidates.length}`);
 
-    await sendDailyReport(newCandidates.length, this.candidates.length, newCandidates);
+    await sendDailyReport(newCandidates.length, this.candidates.length, newCandidates, this.candidates);
 
     return newCandidates.length;
   }
