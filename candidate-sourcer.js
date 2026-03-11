@@ -1,6 +1,8 @@
+require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const config = require('./config');
+const { sendDailyReport } = require('./mailer');
 
 class CandidateSourcer {
   constructor() {
@@ -83,16 +85,19 @@ class CandidateSourcer {
       }
     ];
 
-    let addedCount = 0;
+    const newCandidates = [];
     for (const candidate of simulatedCandidates) {
       if (this.addCandidate(candidate)) {
-        addedCount++;
+        newCandidates.push(candidate);
       }
     }
 
-    console.log(`\n✅ Sourcing complete! Added ${addedCount} new candidates.`);
+    console.log(`\n✅ Sourcing complete! Added ${newCandidates.length} new candidates.`);
     console.log(`📊 Total candidates: ${this.candidates.length}`);
-    return addedCount;
+
+    await sendDailyReport(newCandidates.length, this.candidates.length, newCandidates);
+
+    return newCandidates.length;
   }
 
   generateReport() {
