@@ -14,7 +14,6 @@ async function fetchApolloCandiates() {
   if (!apiKey || apiKey === 'your-apollo-api-key-here') return [];
 
   const body = JSON.stringify({
-    api_key: apiKey,
     titles: config.searchKeywords,
     person_locations: config.locations,
     per_page: 10
@@ -23,10 +22,11 @@ async function fetchApolloCandiates() {
   return new Promise((resolve) => {
     const req = https.request({
       hostname: 'api.apollo.io',
-      path: '/v1/mixed_people/search',
+      path: '/api/v1/mixed_people/search',
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'x-api-key': apiKey,
         'Content-Length': Buffer.byteLength(body)
       }
     }, (res) => {
@@ -34,7 +34,9 @@ async function fetchApolloCandiates() {
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
         try {
+          console.log(`Apollo.io HTTP status: ${res.statusCode}`);
           const json = JSON.parse(data);
+          if (json.error) console.log('Apollo.io error:', json.error);
           const people = json.people || [];
           const candidates = people.map(p => ({
             name: `${p.first_name || ''} ${p.last_name || ''}`.trim(),
