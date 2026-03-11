@@ -99,11 +99,29 @@ async function sendDailyReport(addedCount, totalCount, newCandidates, allCandida
     </div>
   `;
 
+  // Build CSV attachment from the full candidate list
+  const csvHeader = 'Name,Title,Location,Experience,Source,Email,LinkedIn,Date Added';
+  const csvRows = displayList.map(c =>
+    [c.name, c.title, c.location, c.experience, c.source, c.email || '', c.linkedinUrl || '', c.date || '']
+      .map(v => (String(v).includes(',') ? `"${v}"` : v))
+      .join(',')
+  );
+  const csvContent = [csvHeader, ...csvRows].join('\r\n');
+
+  const dateStamp = new Date().toISOString().slice(0, 10);
+
   await transporter.sendMail({
     from: EMAIL_FROM,
     to: EMAIL_TO,
     subject,
-    html
+    html,
+    attachments: [
+      {
+        filename: `vet-md-candidates-${dateStamp}.csv`,
+        content: csvContent,
+        contentType: 'text/csv'
+      }
+    ]
   });
 
   console.log(`📧 Daily report emailed to ${EMAIL_TO}`);
