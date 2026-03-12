@@ -1,5 +1,6 @@
 require('dotenv').config();
 const nodemailer = require('nodemailer');
+const XLSX = require('xlsx');
 
 /**
  * Sends the daily candidate report via Gmail.
@@ -99,11 +100,41 @@ async function sendDailyReport(addedCount, totalCount, newCandidates, allCandida
     </div>
   `;
 
+  // Build Excel attachment from the full candidate list
+  const excelData = displayList.map(c => {
+    const isNew = newKeys.has(`${c.name.toLowerCase()}|${c.location.toLowerCase()}`);
+    return {
+      'Status': isNew ? 'NEW' : '',
+      'Name': c.name,
+      'Title': c.title,
+      'Location': c.location,
+      'Experience': c.experience,
+      'Source': c.source,
+      'Email': c.email || '',
+      'LinkedIn URL': c.linkedinUrl || '',
+      'Date Added': c.date || ''
+    };
+  });
+
+  const ws = XLSX.utils.json_to_sheet(excelData);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Candidates');
+  const xlsxBuffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+
+  const dateStamp = new Date().toISOString().slice(0, 10);
+
   await transporter.sendMail({
     from: EMAIL_FROM,
     to: EMAIL_TO,
     subject,
-    html
+    html,
+    attachments: [
+      {
+        filename: `vet-md-candidates-${dateStamp}.xlsx`,
+        content: xlsxBuffer,
+        contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      }
+    ]
   });
 
   console.log(`📧 Daily report emailed to ${EMAIL_TO}`);
