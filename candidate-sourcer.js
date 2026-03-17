@@ -6,12 +6,12 @@ const config = require('./config');
 const { sendDailyReport } = require('./mailer');
 
 /**
- * Fetches real candidates from Apollo.io People Search API.
- * Returns an array of candidate objects, or [] if API key is missing/fails.
+ * Fetches candidates from Apollo.io People Search API.
+ * Requires a paid Apollo plan. Returns null if not configured, [] on API failure.
  */
-async function fetchApolloCandiates() {
+async function fetchApolloCandidates() {
   const apiKey = (process.env.APOLLO_API_KEY || '').trim();
-  if (!apiKey || apiKey === 'your-apollo-api-key-here') return [];
+  if (!apiKey || apiKey === 'your-apollo-api-key-here') return null;
 
   const body = JSON.stringify({
     titles: config.searchKeywords,
@@ -36,7 +36,11 @@ async function fetchApolloCandiates() {
         try {
           console.log(`Apollo.io HTTP status: ${res.statusCode}`);
           const json = JSON.parse(data);
-          if (json.error) console.log('Apollo.io error:', json.error);
+          if (json.error) {
+            console.log('Apollo.io error:', json.error);
+            resolve([]);
+            return;
+          }
           const people = json.people || [];
           const candidates = people.map(p => ({
             name: `${p.first_name || ''} ${p.last_name || ''}`.trim(),
@@ -47,7 +51,7 @@ async function fetchApolloCandiates() {
             email: p.email || '',
             linkedinUrl: p.linkedin_url || ''
           }));
-          console.log(`🌐 Apollo.io returned ${candidates.length} candidates.`);
+          console.log(`✅ Apollo.io returned ${candidates.length} candidates.`);
           resolve(candidates);
         } catch (e) {
           console.log('⚠️  Apollo.io response parse error:', e.message);
@@ -63,6 +67,221 @@ async function fetchApolloCandiates() {
     req.end();
   });
 }
+
+/**
+ * Fetches candidates from People Data Labs Person Search API.
+ * Free tier: 100 API calls/month. Sign up at https://www.peopledatalabs.com/
+ * Returns null if not configured, [] on API failure.
+ */
+async function fetchPDLCandidates() {
+  const apiKey = (process.env.PDL_API_KEY || '').trim();
+  if (!apiKey || apiKey === 'your-pdl-api-key-here') return null;
+
+  // PDL supports SQL-style queries against their person dataset
+  const sqlQuery = `SELECT * FROM person
+    WHERE job_title IN (
+      'veterinary medical director',
+      'dvm medical director',
+      'veterinary clinical director',
+      'veterinary chief of staff',
+      'chief of staff'
+    )
+    AND location_country = 'united states'
+    LIMIT 10`;
+
+  const body = JSON.stringify({ sql: sqlQuery, size: 10, pretty: false });
+
+  return new Promise((resolve) => {
+    const req = https.request({
+      hostname: 'api.peopledatalabs.com',
+      path: '/v5/person/search',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Api-Key': apiKey,
+        'Content-Length': Buffer.byteLength(body)
+      }
+    }, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          console.log(`People Data Labs HTTP status: ${res.statusCode}`);
+          const json = JSON.parse(data);
+          if (res.statusCode !== 200) {
+            console.log('PDL error:', json.error || json.message || JSON.stringify(json));
+            resolve([]);
+            return;
+          }
+          const people = json.data || [];
+          const candidates = people.map(p => ({
+            name: p.full_name || 'Unknown',
+            title: p.job_title || 'Veterinarian',
+            location: p.location_locality
+              ? `${p.location_locality}${p.location_region ? ', ' + p.location_region : ''}`
+              : (p.location_region || 'Unknown'),
+            experience: 'Unknown',
+            source: 'People Data Labs',
+            email: (p.emails && p.emails[0] && p.emails[0].address) || '',
+            linkedinUrl: p.linkedin_url || ''
+          }));
+          console.log(`✅ People Data Labs returned ${candidates.length} candidates.`);
+          resolve(candidates);
+        } catch (e) {
+          console.log('⚠️  PDL response parse error:', e.message);
+          resolve([]);
+        }
+      });
+    });
+    req.on('error', (e) => {
+      console.log('⚠️  PDL request failed:', e.message);
+      resolve([]);
+    });
+    req.write(body);
+    req.end();
+  });
+}
+
+/**
+ * Scrapes public veterinary license data from state licensing boards.
+ * No API key required — these are public government records.
+ * Currently supports: Florida DBPR.
+ */
+async function fetchStateLicenseBoardCandidates() {
+  const allCandidates = [];
+
+  // Florida Department of Business and Professional Regulation (DBPR)
+  // Veterinary Medicine board — public license lookup, no key needed
+  try {
+    console.log('   Querying Florida DBPR (Veterinary Medicine board)...');
+    const flCandidates = await scrapeFloridaDBPR();
+    if (flCandidates.length > 0) {
+      console.log(`   Florida DBPR: found ${flCandidates.length} active licensees.`);
+      allCandidates.push(...flCandidates);
+    } else {
+      console.log('   Florida DBPR: 0 results (site may have changed; check manually at myfloridalicense.com).');
+    }
+  } catch (e) {
+    console.log('⚠️  Florida DBPR scrape failed:', e.message);
+  }
+
+  return allCandidates;
+}
+
+/**
+ * Queries Florida DBPR public license lookup.
+ * Board 0500 = Veterinary Medicine. Returns active licensees only.
+ * Source URL: https://www.myfloridalicense.com/wl11.asp
+ */
+function scrapeFloridaDBPR() {
+  // Search all license types on the Veterinary Medicine board, active licenses only
+  const params = 'mode=0&brd=0500&typ=&lic=&nm=&cty=&zip=&cntry=0&con=&adr=&i=1';
+
+  return new Promise((resolve) => {
+    const req = https.request({
+      hostname: 'www.myfloridalicense.com',
+      path: `/wl11.asp?${params}`,
+      method: 'GET',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; VetMD-Sourcer/1.0; public records lookup)',
+        'Accept': 'text/html,application/xhtml+xml'
+      }
+    }, (res) => {
+      // Handle redirects
+      if (res.statusCode === 301 || res.statusCode === 302) {
+        console.log(`   Florida DBPR redirected to: ${res.headers.location}`);
+        resolve([]);
+        return;
+      }
+
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          console.log(`   Florida DBPR HTTP status: ${res.statusCode}`);
+          const candidates = parseFloridaDBPRHtml(data);
+          resolve(candidates);
+        } catch (e) {
+          console.log('⚠️  Florida DBPR parse error:', e.message);
+          resolve([]);
+        }
+      });
+    });
+    req.on('error', (e) => {
+      console.log('⚠️  Florida DBPR request failed:', e.message);
+      resolve([]);
+    });
+    req.setTimeout(15000, () => {
+      console.log('⚠️  Florida DBPR request timed out.');
+      req.destroy();
+      resolve([]);
+    });
+    req.end();
+  });
+}
+
+/**
+ * Parses Florida DBPR HTML search results into candidate objects.
+ * Extracts licensee name, city, and license status from the results table.
+ * Only returns rows where status is "Current" (active license).
+ */
+function parseFloridaDBPRHtml(html) {
+  const candidates = [];
+
+  // DBPR results table rows — each <tr> holds one licensee
+  const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+  let rowMatch;
+  let headerSkipped = false;
+
+  while ((rowMatch = rowRegex.exec(html)) !== null) {
+    const rowHtml = rowMatch[1];
+
+    // Skip rows without <td> cells (header rows use <th>)
+    if (!/<td/i.test(rowHtml)) continue;
+    if (!headerSkipped) { headerSkipped = true; continue; }
+
+    // Extract all <td> cell text, stripping inner HTML tags
+    const cells = [];
+    const cellRegex = /<td[^>]*>([\s\S]*?)<\/td>/gi;
+    let cellMatch;
+    while ((cellMatch = cellRegex.exec(rowHtml)) !== null) {
+      const text = cellMatch[1]
+        .replace(/<[^>]+>/g, '')   // strip HTML tags
+        .replace(/&amp;/g, '&')
+        .replace(/&nbsp;/g, ' ')
+        .replace(/&#\d+;/g, '')
+        .trim();
+      cells.push(text);
+    }
+
+    // Florida DBPR columns (typical order):
+    // 0: Name, 1: License#, 2: License Type, 3: Board, 4: Status, 5: Expiry, 6: City/County
+    if (cells.length < 5) continue;
+
+    const name   = cells[0] || '';
+    const status = cells[4] || '';
+    const city   = cells[6] || '';
+
+    // Only include currently active licensees; skip header artifacts
+    if (!name || name.toLowerCase() === 'name') continue;
+    if (status.toLowerCase() !== 'current') continue;
+
+    candidates.push({
+      name,
+      title: 'Veterinarian (FL Licensed)',
+      location: city ? `${city}, Florida` : 'Florida',
+      experience: 'Unknown',
+      source: 'Florida DBPR (Public Record)',
+      email: '',
+      linkedinUrl: ''
+    });
+  }
+
+  // Cap per run to avoid flooding CSV on first run
+  return candidates.slice(0, 20);
+}
+
+// ─── Main CandidateSourcer class ─────────────────────────────────────────────
 
 class CandidateSourcer {
   constructor() {
@@ -90,13 +309,13 @@ class CandidateSourcer {
       title: candidate.title || 'Veterinarian',
       location: candidate.location || 'Unknown',
       experience: candidate.experience || 'Unknown',
-      source: candidate.source || 'Web Search',
+      source: candidate.source || 'Unknown',
       date: new Date().toISOString().split('T')[0],
       email: candidate.email || '',
       linkedinUrl: candidate.linkedinUrl || ''
     };
 
-    const exists = this.candidates.some(c => 
+    const exists = this.candidates.some(c =>
       c.name.toLowerCase() === newCandidate.name.toLowerCase() &&
       c.location.toLowerCase() === newCandidate.location.toLowerCase()
     );
@@ -104,7 +323,7 @@ class CandidateSourcer {
     if (!exists) {
       this.candidates.push(newCandidate);
       this.saveCandidates();
-      console.log(`✓ Added: ${newCandidate.name} from ${newCandidate.location}`);
+      console.log(`✓ Added: ${newCandidate.name} — ${newCandidate.location}`);
       return true;
     }
     return false;
@@ -115,122 +334,107 @@ class CandidateSourcer {
     const rows = this.candidates.map(c =>
       `${c.name},${c.title},${c.location},${c.experience},${c.source},${c.date},${c.email || ''},${c.linkedinUrl || ''}`
     ).join('\n');
-    
     fs.writeFileSync(this.candidatesFile, header + rows);
   }
 
   async sourceCandidates() {
     console.log('🔍 Starting candidate sourcing...');
-    console.log(`📍 Searching for: ${config.searchKeywords}`);
+    console.log(`📍 Targeting: ${config.searchKeywords.join(', ')}`);
+    console.log('');
 
-    // Try Apollo.io first; fall back to simulated pool if not configured
-    const apolloCandidates = await fetchApolloCandiates();
+    const allResults = [];
+    let apiSourceConfigured = false;
 
-    const candidatePool = apolloCandidates.length > 0 ? apolloCandidates : [
-      { name: 'Dr. Sarah Johnson', title: 'Medical Director', location: 'California', experience: '8 years', source: 'LinkedIn', email: '', linkedinUrl: 'https://linkedin.com/in/sarah-johnson-dvm' },
-      { name: 'Dr. Michael Chen', title: 'Veterinary Medical Director', location: 'Texas', experience: '12 years', source: 'VetMedJobs.com', email: '', linkedinUrl: 'https://linkedin.com/in/michael-chen-dvm' },
-      { name: 'Dr. Emma Williams', title: 'Clinical Director', location: 'New York', experience: '6 years', source: 'VetCareers.net', email: '', linkedinUrl: '' },
-      { name: 'Dr. James Patterson', title: 'Medical Director', location: 'Florida', experience: '9 years', source: 'LinkedIn', email: '', linkedinUrl: 'https://linkedin.com/in/james-patterson-dvm' },
-      { name: 'Dr. Olivia Martinez', title: 'Veterinary Medical Director', location: 'Colorado', experience: '11 years', source: 'Indeed', email: '', linkedinUrl: '' },
-      { name: 'Dr. Noah Thompson', title: 'Chief of Staff', location: 'Washington', experience: '7 years', source: 'VetMedJobs.com', email: '', linkedinUrl: '' },
-      { name: 'Dr. Ava Rodriguez', title: 'Medical Director', location: 'Arizona', experience: '10 years', source: 'VetCareers.net', email: '', linkedinUrl: '' },
-      { name: 'Dr. Liam Anderson', title: 'Veterinary Medical Director', location: 'Illinois', experience: '14 years', source: 'LinkedIn', email: '', linkedinUrl: 'https://linkedin.com/in/liam-anderson-dvm' },
-      { name: 'Dr. Sophia Davis', title: 'Clinical Director', location: 'Georgia', experience: '5 years', source: 'Indeed', email: '', linkedinUrl: '' },
-      { name: 'Dr. Mason Wilson', title: 'Medical Director', location: 'North Carolina', experience: '8 years', source: 'VetMedJobs.com', email: '', linkedinUrl: '' },
-      { name: 'Dr. Isabella Moore', title: 'Veterinary Medical Director', location: 'Michigan', experience: '13 years', source: 'LinkedIn', email: '', linkedinUrl: 'https://linkedin.com/in/isabella-moore-dvm' },
-      { name: 'Dr. Ethan Taylor', title: 'Chief of Staff', location: 'Ohio', experience: '6 years', source: 'VetCareers.net', email: '', linkedinUrl: '' },
-      { name: 'Dr. Charlotte Jackson', title: 'Medical Director', location: 'Pennsylvania', experience: '9 years', source: 'Indeed', email: '', linkedinUrl: '' },
-      { name: 'Dr. Aiden White', title: 'Veterinary Medical Director', location: 'Virginia', experience: '11 years', source: 'LinkedIn', email: '', linkedinUrl: 'https://linkedin.com/in/aiden-white-dvm' },
-      { name: 'Dr. Mia Harris', title: 'Clinical Director', location: 'Minnesota', experience: '7 years', source: 'VetMedJobs.com', email: '', linkedinUrl: '' },
-      { name: 'Dr. Lucas Martin', title: 'Medical Director', location: 'Oregon', experience: '10 years', source: 'VetCareers.net', email: '', linkedinUrl: '' },
-      { name: 'Dr. Amelia Garcia', title: 'Veterinary Medical Director', location: 'Nevada', experience: '8 years', source: 'LinkedIn', email: '', linkedinUrl: 'https://linkedin.com/in/amelia-garcia-dvm' },
-      { name: 'Dr. Henry Martinez', title: 'Chief of Staff', location: 'Tennessee', experience: '15 years', source: 'Indeed', email: '', linkedinUrl: '' },
-      { name: 'Dr. Harper Robinson', title: 'Medical Director', location: 'Missouri', experience: '6 years', source: 'VetMedJobs.com', email: '', linkedinUrl: '' },
-      { name: 'Dr. Sebastian Clark', title: 'Veterinary Medical Director', location: 'Wisconsin', experience: '12 years', source: 'LinkedIn', email: '', linkedinUrl: 'https://linkedin.com/in/sebastian-clark-dvm' },
-      { name: 'Dr. Evelyn Lewis', title: 'Clinical Director', location: 'Indiana', experience: '9 years', source: 'VetCareers.net', email: '', linkedinUrl: '' },
-      { name: 'Dr. Jack Lee', title: 'Medical Director', location: 'Maryland', experience: '7 years', source: 'Indeed', email: '', linkedinUrl: '' },
-      { name: 'Dr. Scarlett Walker', title: 'Veterinary Medical Director', location: 'Massachusetts', experience: '11 years', source: 'LinkedIn', email: '', linkedinUrl: 'https://linkedin.com/in/scarlett-walker-dvm' },
-      { name: 'Dr. Owen Hall', title: 'Chief of Staff', location: 'South Carolina', experience: '8 years', source: 'VetMedJobs.com', email: '', linkedinUrl: '' },
-      { name: 'Dr. Victoria Allen', title: 'Medical Director', location: 'Kentucky', experience: '10 years', source: 'VetCareers.net', email: '', linkedinUrl: '' },
-      { name: 'Dr. Carter Young', title: 'Veterinary Medical Director', location: 'Louisiana', experience: '13 years', source: 'LinkedIn', email: '', linkedinUrl: 'https://linkedin.com/in/carter-young-dvm' },
-      { name: 'Dr. Grace Hernandez', title: 'Clinical Director', location: 'Oklahoma', experience: '6 years', source: 'Indeed', email: '', linkedinUrl: '' },
-      { name: 'Dr. Wyatt King', title: 'Medical Director', location: 'Utah', experience: '9 years', source: 'VetMedJobs.com', email: '', linkedinUrl: '' },
-      { name: 'Dr. Chloe Wright', title: 'Veterinary Medical Director', location: 'New Mexico', experience: '7 years', source: 'LinkedIn', email: '', linkedinUrl: 'https://linkedin.com/in/chloe-wright-dvm' },
-      { name: 'Dr. Julian Lopez', title: 'Chief of Staff', location: 'Idaho', experience: '11 years', source: 'VetCareers.net', email: '', linkedinUrl: '' },
-      { name: 'Dr. Penelope Hill', title: 'Medical Director', location: 'Nebraska', experience: '8 years', source: 'Indeed', email: '', linkedinUrl: '' },
-      { name: 'Dr. Eli Scott', title: 'Veterinary Medical Director', location: 'Kansas', experience: '14 years', source: 'LinkedIn', email: '', linkedinUrl: 'https://linkedin.com/in/eli-scott-dvm' },
-      { name: 'Dr. Layla Green', title: 'Clinical Director', location: 'Arkansas', experience: '5 years', source: 'VetMedJobs.com', email: '', linkedinUrl: '' },
-      { name: 'Dr. Brayden Adams', title: 'Medical Director', location: 'Mississippi', experience: '10 years', source: 'VetCareers.net', email: '', linkedinUrl: '' },
-      { name: 'Dr. Riley Baker', title: 'Veterinary Medical Director', location: 'Iowa', experience: '9 years', source: 'LinkedIn', email: '', linkedinUrl: 'https://linkedin.com/in/riley-baker-dvm' },
-      { name: 'Dr. Zoey Gonzalez', title: 'Chief of Staff', location: 'West Virginia', experience: '12 years', source: 'Indeed', email: '', linkedinUrl: '' },
-      { name: 'Dr. Nolan Nelson', title: 'Medical Director', location: 'Maine', experience: '7 years', source: 'VetMedJobs.com', email: '', linkedinUrl: '' },
-      { name: 'Dr. Lily Carter', title: 'Veterinary Medical Director', location: 'New Hampshire', experience: '8 years', source: 'LinkedIn', email: '', linkedinUrl: 'https://linkedin.com/in/lily-carter-dvm' },
-      { name: 'Dr. Caleb Mitchell', title: 'Clinical Director', location: 'Vermont', experience: '6 years', source: 'VetCareers.net', email: '', linkedinUrl: '' },
-      { name: 'Dr. Hannah Perez', title: 'Medical Director', location: 'Delaware', experience: '11 years', source: 'Indeed', email: '', linkedinUrl: '' },
-      { name: 'Dr. Ryan Roberts', title: 'Veterinary Medical Director', location: 'Hawaii', experience: '9 years', source: 'LinkedIn', email: '', linkedinUrl: 'https://linkedin.com/in/ryan-roberts-dvm' },
-      { name: 'Dr. Stella Turner', title: 'Chief of Staff', location: 'Alaska', experience: '10 years', source: 'VetMedJobs.com', email: '', linkedinUrl: '' },
-      { name: 'Dr. Aaron Phillips', title: 'Medical Director', location: 'Rhode Island', experience: '8 years', source: 'VetCareers.net', email: '', linkedinUrl: '' },
-      { name: 'Dr. Leah Campbell', title: 'Veterinary Medical Director', location: 'Montana', experience: '13 years', source: 'LinkedIn', email: '', linkedinUrl: 'https://linkedin.com/in/leah-campbell-dvm' },
-      { name: 'Dr. Dylan Parker', title: 'Clinical Director', location: 'Wyoming', experience: '7 years', source: 'Indeed', email: '', linkedinUrl: '' },
-      { name: 'Dr. Aubrey Evans', title: 'Medical Director', location: 'South Dakota', experience: '9 years', source: 'VetMedJobs.com', email: '', linkedinUrl: '' },
-      { name: 'Dr. Connor Edwards', title: 'Veterinary Medical Director', location: 'North Dakota', experience: '11 years', source: 'LinkedIn', email: '', linkedinUrl: 'https://linkedin.com/in/connor-edwards-dvm' },
-      { name: 'Dr. Savannah Collins', title: 'Chief of Staff', location: 'Connecticut', experience: '6 years', source: 'VetCareers.net', email: '', linkedinUrl: '' },
-      { name: 'Dr. Gavin Stewart', title: 'Medical Director', location: 'New Jersey', experience: '10 years', source: 'Indeed', email: '', linkedinUrl: '' },
-      { name: 'Dr. Aurora Sanchez', title: 'Veterinary Medical Director', location: 'Missouri', experience: '8 years', source: 'LinkedIn', email: '', linkedinUrl: 'https://linkedin.com/in/aurora-sanchez-dvm' },
-      { name: 'Dr. Adrian Morris', title: 'Clinical Director', location: 'Virginia', experience: '12 years', source: 'VetMedJobs.com', email: '', linkedinUrl: '' },
-      { name: 'Dr. Ellie Rogers', title: 'Medical Director', location: 'Georgia', experience: '7 years', source: 'VetCareers.net', email: '', linkedinUrl: '' },
-      { name: 'Dr. Blake Reed', title: 'Veterinary Medical Director', location: 'Michigan', experience: '9 years', source: 'LinkedIn', email: '', linkedinUrl: 'https://linkedin.com/in/blake-reed-dvm' },
-      { name: 'Dr. Naomi Cook', title: 'Chief of Staff', location: 'Washington', experience: '14 years', source: 'Indeed', email: '', linkedinUrl: '' },
-      { name: 'Dr. Miles Morgan', title: 'Medical Director', location: 'Oregon', experience: '8 years', source: 'VetMedJobs.com', email: '', linkedinUrl: '' },
-      { name: 'Dr. Violet Bell', title: 'Veterinary Medical Director', location: 'Minnesota', experience: '10 years', source: 'LinkedIn', email: '', linkedinUrl: 'https://linkedin.com/in/violet-bell-dvm' },
-      { name: 'Dr. Jaxon Murphy', title: 'Clinical Director', location: 'Wisconsin', experience: '6 years', source: 'VetCareers.net', email: '', linkedinUrl: '' },
-      { name: 'Dr. Luna Bailey', title: 'Medical Director', location: 'Indiana', experience: '11 years', source: 'Indeed', email: '', linkedinUrl: '' },
-      { name: 'Dr. Brody Rivera', title: 'Veterinary Medical Director', location: 'Colorado', experience: '9 years', source: 'LinkedIn', email: '', linkedinUrl: 'https://linkedin.com/in/brody-rivera-dvm' },
-      { name: 'Dr. Paisley Cooper', title: 'Chief of Staff', location: 'Arizona', experience: '7 years', source: 'VetMedJobs.com', email: '', linkedinUrl: '' },
-      { name: 'Dr. Asher Richardson', title: 'Medical Director', location: 'Illinois', experience: '13 years', source: 'VetCareers.net', email: '', linkedinUrl: '' }
-    ];
+    // ── Source 1: Apollo.io ───────────────────────────────────────────────────
+    const apolloCandidates = await fetchApolloCandidates();
+    if (apolloCandidates === null) {
+      console.log('⏭️  Apollo.io: not configured (set APOLLO_API_KEY in .env; requires paid plan)');
+    } else {
+      apiSourceConfigured = true;
+      allResults.push(...apolloCandidates);
+    }
 
-    // Filter out candidates already in the CSV, then take a fresh batch
-    const unseen = candidatePool.filter(candidate =>
-      !this.candidates.some(
-        c => c.name.toLowerCase() === candidate.name.toLowerCase() &&
-             c.location.toLowerCase() === candidate.location.toLowerCase()
-      )
-    );
+    // ── Source 2: People Data Labs ────────────────────────────────────────────
+    const pdlCandidates = await fetchPDLCandidates();
+    if (pdlCandidates === null) {
+      console.log('⏭️  People Data Labs: not configured (set PDL_API_KEY in .env; 100 free calls/month)');
+    } else {
+      apiSourceConfigured = true;
+      allResults.push(...pdlCandidates);
+    }
 
-    const batch = unseen;
-    console.log(`📋 ${unseen.length} unseen candidates in pool — sourcing all ${batch.length} now.`);
+    // ── Source 3: State licensing boards (no key needed) ─────────────────────
+    console.log('🏛️  Querying state veterinary licensing boards (public records)...');
+    const stateCandidates = await fetchStateLicenseBoardCandidates();
+    allResults.push(...stateCandidates);
+
+    // ── No data at all ────────────────────────────────────────────────────────
+    if (allResults.length === 0) {
+      console.log('');
+      console.log('━'.repeat(60));
+      console.log('⚠️  NO CANDIDATES SOURCED — NO DATA SOURCES RETURNING RESULTS');
+      console.log('━'.repeat(60));
+      if (!apiSourceConfigured) {
+        console.log('');
+        console.log('To enable real candidate data, add at least one API key to .env:');
+        console.log('');
+        console.log('  PDL_API_KEY     — People Data Labs (free: 100 calls/month)');
+        console.log('                    https://www.peopledatalabs.com/');
+        console.log('');
+        console.log('  APOLLO_API_KEY  — Apollo.io (paid plan required)');
+        console.log('                    https://app.apollo.io/#/settings/integrations/api');
+        console.log('');
+        console.log('State licensing board scraping runs automatically but may return 0');
+        console.log('results if the board website is unavailable or has changed its format.');
+      }
+      await sendDailyReport(0, this.candidates.length, [], this.candidates);
+      return 0;
+    }
+
+    // ── Deduplicate across sources by name ────────────────────────────────────
+    const seen = new Set();
+    const uniqueResults = allResults.filter(c => {
+      const key = c.name.toLowerCase().trim();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
 
     const newCandidates = [];
-    for (const candidate of batch) {
+    for (const candidate of uniqueResults) {
       if (this.addCandidate(candidate)) {
         newCandidates.push(candidate);
       }
     }
 
-    console.log(`\n✅ Sourcing complete! Added ${newCandidates.length} new candidates.`);
-    console.log(`📊 Total candidates: ${this.candidates.length}`);
+    console.log('');
+    console.log(`✅ Sourcing complete. Added ${newCandidates.length} new candidates.`);
+    console.log(`📊 Total in database: ${this.candidates.length}`);
 
     await sendDailyReport(newCandidates.length, this.candidates.length, newCandidates, this.candidates);
-
     return newCandidates.length;
   }
 
   generateReport() {
     console.log('\n📋 CANDIDATE REPORT');
     console.log('='.repeat(70));
-    console.log(`Total Candidates: ${this.candidates.length}`);
+    console.log(`Total Candidates in Database: ${this.candidates.length}`);
     console.log('='.repeat(70));
-    
+
+    if (this.candidates.length === 0) {
+      console.log('No candidates in database yet.');
+      return;
+    }
+
     this.candidates.slice(-10).forEach((c, index) => {
       console.log(`\n${index + 1}. ${c.name}`);
-      console.log(`   Title: ${c.title}`);
-      console.log(`   Location: ${c.location}`);
+      console.log(`   Title:      ${c.title}`);
+      console.log(`   Location:   ${c.location}`);
       console.log(`   Experience: ${c.experience}`);
-      console.log(`   Source: ${c.source}`);
-      console.log(`   Email: ${c.email || 'N/A'}`);
-      console.log(`   LinkedIn: ${c.linkedinUrl || 'N/A'}`);
-      console.log(`   Added: ${c.date}`);
+      console.log(`   Source:     ${c.source}`);
+      console.log(`   Email:      ${c.email || 'N/A'}`);
+      console.log(`   LinkedIn:   ${c.linkedinUrl || 'N/A'}`);
+      console.log(`   Added:      ${c.date}`);
     });
   }
 }
