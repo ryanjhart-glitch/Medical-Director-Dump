@@ -11,6 +11,8 @@ permissions:
 jobs:
   source-candidates:
     runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
       - name: Checkout repository
@@ -30,6 +32,7 @@ jobs:
           EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
           APOLLO_API_KEY: ${{ secrets.APOLLO_API_KEY }}
+          PDL_API_KEY: ${{ secrets.PDL_API_KEY }}
         run: node candidate-sourcer.js
 
       - name: Save updated candidates back to repo
