@@ -14,9 +14,13 @@ async function fetchApolloCandidates() {
   if (!apiKey || apiKey === 'your-apollo-api-key-here') return null;
 
   const body = JSON.stringify({
-    titles: config.searchKeywords,
+    titles: [
+      ...config.searchKeywords,
+      'Equine Veterinarian', 'Equine Medical Director', 'Large Animal Veterinarian',
+      'Relief Veterinarian', 'Locum Veterinarian', 'Veterinary Chief of Staff'
+    ],
     person_locations: config.locations,
-    per_page: 10
+    per_page: 25
   });
 
   return new Promise((resolve) => {
@@ -84,12 +88,22 @@ async function fetchPDLCandidates() {
       'dvm medical director',
       'veterinary clinical director',
       'veterinary chief of staff',
-      'chief of staff'
+      'chief of staff',
+      'equine veterinarian',
+      'equine medical director',
+      'large animal veterinarian',
+      'relief veterinarian',
+      'locum veterinarian',
+      'locum tenens veterinarian',
+      'per diem veterinarian',
+      'veterinary practice owner',
+      'associate veterinarian',
+      'staff veterinarian'
     )
-    AND location_country = 'united states'
-    LIMIT 10`;
+    AND location_country IN ('united states', 'canada')
+    LIMIT 25`;
 
-  const body = JSON.stringify({ sql: sqlQuery, size: 10, pretty: false });
+  const body = JSON.stringify({ sql: sqlQuery, size: 25, pretty: false });
 
   return new Promise((resolve) => {
     const req = https.request({
@@ -205,17 +219,53 @@ function extractTableRows(html) {
   return rows;
 }
 
-/** Builds a candidate object from raw fields. */
-function makeCandidate(name, city, stateAbbr, stateName, sourceLabel) {
+/** Builds a candidate object from raw fields. titleOverride replaces default "Veterinarian (XX Licensed)". */
+function makeCandidate(name, city, stateAbbr, stateName, sourceLabel, titleOverride) {
   return {
     name,
-    title: `Veterinarian (${stateAbbr} Licensed)`,
+    title: titleOverride || `Veterinarian (${stateAbbr} Licensed)`,
     location: city ? `${city}, ${stateName}` : stateName,
     experience: 'Unknown',
     source: `${sourceLabel} (Public Record)`,
     email: '',
     linkedinUrl: ''
   };
+}
+
+/**
+ * Generic HTTP POST helper for form-based board search pages.
+ * postData can be a plain object (key/value) or a pre-encoded string.
+ */
+function httpPost(hostname, path, postData, extraHeaders = {}) {
+  return new Promise((resolve) => {
+    const body = typeof postData === 'string'
+      ? postData
+      : Object.entries(postData).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&');
+    const req = https.request({
+      hostname,
+      path,
+      method: 'POST',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; VetMD-Sourcer/1.0; public records lookup)',
+        'Accept': 'text/html,application/xhtml+xml',
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Length': Buffer.byteLength(body),
+        ...extraHeaders
+      }
+    }, (res) => {
+      if (res.statusCode === 301 || res.statusCode === 302) {
+        resolve({ status: res.statusCode, html: '', redirect: res.headers.location });
+        return;
+      }
+      let html = '';
+      res.on('data', chunk => html += chunk);
+      res.on('end', () => resolve({ status: res.statusCode, html }));
+    });
+    req.on('error', e => resolve({ status: 0, html: '', error: e.message }));
+    req.setTimeout(15000, () => { req.destroy(); resolve({ status: 0, html: '', error: 'timeout' }); });
+    req.write(body);
+    req.end();
+  });
 }
 
 // ── Florida ───────────────────────────────────────────────────────────────────
@@ -403,25 +453,873 @@ async function scrapeColorado() {
     .slice(0, 20);
 }
 
+// ─── Additional US State Licensing Board Scrapers ─────────────────────────────
+
+// ── Virginia ──────────────────────────────────────────────────────────────────
+// Source: https://dhp.virginiainteractive.org  VA Dept of Health Professions
+async function scrapeVirginia() {
+  const { status, html, error } = await httpGet(
+    'dhp.virginiainteractive.org',
+    '/lookup/index?profession=VETM&firstname=&lastname=&city=&county=&licnum=&status=A'
+  );
+  if (error) { console.log(`   VA: ${error}`); return []; }
+  console.log(`   VA DHP: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'VA', 'Virginia', 'VA DHP'))
+    .slice(0, 20);
+}
+
+// ── North Carolina ────────────────────────────────────────────────────────────
+// Source: https://portal.ncvmb.org  NC Veterinary Medical Board
+async function scrapeNorthCarolina() {
+  const { status, html, error } = await httpGet(
+    'portal.ncvmb.org',
+    '/verification/search.aspx?LicType=DVM&Status=A&LastName=&FirstName=&City='
+  );
+  if (error) { console.log(`   NC: ${error}`); return []; }
+  console.log(`   NC VMB: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'NC', 'North Carolina', 'NC VMB'))
+    .slice(0, 20);
+}
+
+// ── Georgia ───────────────────────────────────────────────────────────────────
+// Source: https://sos.georgia.gov  GA Secretary of State license lookup
+async function scrapeGeorgia() {
+  const { status, html, error } = await httpGet(
+    'verify.sos.ga.gov',
+    '/verification/Search.aspx?facility=N&board=VET&status=A&lname=&fname=&city='
+  );
+  if (error) { console.log(`   GA: ${error}`); return []; }
+  console.log(`   GA SOS: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'GA', 'Georgia', 'GA SOS'))
+    .slice(0, 20);
+}
+
+// ── Michigan ──────────────────────────────────────────────────────────────────
+// Source: https://www.lara.michigan.gov  MI LARA license lookup
+async function scrapeMichigan() {
+  const { status, html, error } = await httpGet(
+    'www.lara.michigan.gov',
+    '/online-services/occupational-licensing/license-search/?profession=VETERINARIAN&status=ACTIVE&fname=&lname=&city='
+  );
+  if (error) { console.log(`   MI: ${error}`); return []; }
+  console.log(`   MI LARA: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'MI', 'Michigan', 'MI LARA'))
+    .slice(0, 20);
+}
+
+// ── Pennsylvania ──────────────────────────────────────────────────────────────
+// Source: https://www.pals.pa.gov  PA Licensing System
+async function scrapePennsylvania() {
+  const { status, html, error } = await httpGet(
+    'www.pals.pa.gov',
+    '/palssPublic/publicConsumer.do?action=ProfessionSelected&selectedBoardCode=VET&statusCode=A'
+  );
+  if (error) { console.log(`   PA: ${error}`); return []; }
+  console.log(`   PA PALS: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'PA', 'Pennsylvania', 'PA PALS'))
+    .slice(0, 20);
+}
+
+// ── Washington ────────────────────────────────────────────────────────────────
+// Source: https://fortress.wa.gov  WA Dept of Health credential search
+async function scrapeWashington() {
+  const { status, html, error } = await httpGet(
+    'fortress.wa.gov',
+    '/doh/providercredentialsearch/ProviderCredentialSearch.aspx?ProfSession=VT&StCode=&LastName=&FirstName=&City=&CredentialType=&ActiveOnly=1'
+  );
+  if (error) { console.log(`   WA: ${error}`); return []; }
+  console.log(`   WA DOH: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'WA', 'Washington', 'WA DOH'))
+    .slice(0, 20);
+}
+
+// ── Oregon ────────────────────────────────────────────────────────────────────
+// Source: https://olvr.oregon.gov  OR Veterinary Licensing Board
+async function scrapeOregon() {
+  const { status, html, error } = await httpGet(
+    'olvr.oregon.gov',
+    '/LicenseeSearch?profCode=VET&status=Active&lname=&fname=&city='
+  );
+  if (error) { console.log(`   OR: ${error}`); return []; }
+  console.log(`   OR VLB: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'OR', 'Oregon', 'OR VLB'))
+    .slice(0, 20);
+}
+
+// ── Nevada ────────────────────────────────────────────────────────────────────
+// Source: https://nvvetboard.us  Nevada Veterinary Medical Board
+async function scrapeNevada() {
+  const { status, html, error } = await httpGet(
+    'nvvetboard.us',
+    '/wp/licensees/?status=active&type=DVM&search='
+  );
+  if (error) { console.log(`   NV: ${error}`); return []; }
+  console.log(`   NV VetBoard: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'NV', 'Nevada', 'NV Vet Board'))
+    .slice(0, 20);
+}
+
+// ── Minnesota ─────────────────────────────────────────────────────────────────
+// Source: https://mn.gov/amlps  MN Automated License Lookup
+async function scrapeMinnesota() {
+  const { status, html, error } = await httpGet(
+    'mn.gov',
+    '/amlps/licVerification.do?licType=VT&status=A&last=&first=&city='
+  );
+  if (error) { console.log(`   MN: ${error}`); return []; }
+  console.log(`   MN AMLPS: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'MN', 'Minnesota', 'MN AMLPS'))
+    .slice(0, 20);
+}
+
+// ── Wisconsin ─────────────────────────────────────────────────────────────────
+// Source: https://app.wi.gov/licensesearch  WI DSPS license search
+async function scrapeWisconsin() {
+  const { status, html, error } = await httpGet(
+    'app.wi.gov',
+    '/licensesearch/forwardList.do?profession=VET&licenseType=DVM&status=Active&lastName=&firstName=&city='
+  );
+  if (error) { console.log(`   WI: ${error}`); return []; }
+  console.log(`   WI DSPS: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'WI', 'Wisconsin', 'WI DSPS'))
+    .slice(0, 20);
+}
+
+// ── Indiana ───────────────────────────────────────────────────────────────────
+// Source: https://mylicense.in.gov  IN Professional Licensing Agency
+async function scrapeIndiana() {
+  const { status, html, error } = await httpGet(
+    'mylicense.in.gov',
+    '/everification/Search.aspx?profession=VETERINARIAN&status=A&lastName=&firstName=&city='
+  );
+  if (error) { console.log(`   IN: ${error}`); return []; }
+  console.log(`   IN PLA: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'IN', 'Indiana', 'IN PLA'))
+    .slice(0, 20);
+}
+
+// ── Missouri ──────────────────────────────────────────────────────────────────
+// Source: https://pr.mo.gov  MO Division of Professional Registration
+async function scrapeMissouri() {
+  const { status, html, error } = await httpGet(
+    'pr.mo.gov',
+    '/LicenseeSearch/LicenseeSearch.aspx?board=VET&status=Active&lname=&fname=&city='
+  );
+  if (error) { console.log(`   MO: ${error}`); return []; }
+  console.log(`   MO DPR: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'MO', 'Missouri', 'MO DPR'))
+    .slice(0, 20);
+}
+
+// ── New Jersey ────────────────────────────────────────────────────────────────
+// Source: https://www.njconsumeraffairs.gov  NJ Consumer Affairs - Veterinary Examiners
+async function scrapeNewJersey() {
+  const { status, html, error } = await httpGet(
+    'www.njconsumeraffairs.gov',
+    '/vme/Pages/Verify-a-License.aspx?profession=VET&status=ACTIVE&lname=&fname=&city='
+  );
+  if (error) { console.log(`   NJ: ${error}`); return []; }
+  console.log(`   NJ DJCA: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'NJ', 'New Jersey', 'NJ DJCA'))
+    .slice(0, 20);
+}
+
+// ── Oklahoma ──────────────────────────────────────────────────────────────────
+// Source: https://ovmb.ok.gov  Oklahoma Veterinary Medical Board
+async function scrapeOklahoma() {
+  const { status, html, error } = await httpGet(
+    'ovmb.ok.gov',
+    '/Lookup/Index?type=DVM&status=Active&lname=&fname=&city='
+  );
+  if (error) { console.log(`   OK: ${error}`); return []; }
+  console.log(`   OK VMB: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'OK', 'Oklahoma', 'OK VMB'))
+    .slice(0, 20);
+}
+
+// ── South Carolina ────────────────────────────────────────────────────────────
+// Source: https://www.llronline.com  SC Labor Licensing and Regulation
+async function scrapeSouthCarolina() {
+  const { status, html, error } = await httpGet(
+    'www.llronline.com',
+    '/POL/vme/index.asp?action=Search&status=Active&lname=&fname=&city='
+  );
+  if (error) { console.log(`   SC: ${error}`); return []; }
+  console.log(`   SC LLR: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'SC', 'South Carolina', 'SC LLR'))
+    .slice(0, 20);
+}
+
+// ── Kentucky ──────────────────────────────────────────────────────────────────
+// Source: https://kybovme.ky.gov  Kentucky Board of Veterinary Medicine
+async function scrapeKentucky() {
+  const { status, html, error } = await httpGet(
+    'kybovme.ky.gov',
+    '/Pages/licensee.aspx?status=Active&type=DVM&lname=&fname=&city='
+  );
+  if (error) { console.log(`   KY: ${error}`); return []; }
+  console.log(`   KY BVME: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'KY', 'Kentucky', 'KY BVME'))
+    .slice(0, 20);
+}
+
+// ── Louisiana ─────────────────────────────────────────────────────────────────
+// Source: https://lsbvm.state.la.us  Louisiana State Board of Veterinary Medicine
+async function scrapeLouisiana() {
+  const { status, html, error } = await httpGet(
+    'lsbvm.state.la.us',
+    '/licensee_list.asp?status=Active&type=DVM'
+  );
+  if (error) { console.log(`   LA: ${error}`); return []; }
+  console.log(`   LA SBVM: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'LA', 'Louisiana', 'LA SBVM'))
+    .slice(0, 20);
+}
+
+// ── Iowa ──────────────────────────────────────────────────────────────────────
+// Source: https://iowaveterinaryboard.gov  Iowa Veterinary Medical Board
+async function scrapeIowa() {
+  const { status, html, error } = await httpGet(
+    'iowaveterinaryboard.gov',
+    '/licensee/index.cfm?status=Active&type=DVM&lname=&fname='
+  );
+  if (error) { console.log(`   IA: ${error}`); return []; }
+  console.log(`   IA VMB: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'IA', 'Iowa', 'IA VMB'))
+    .slice(0, 20);
+}
+
+// ── Kansas ────────────────────────────────────────────────────────────────────
+// Source: https://www.ksvetboard.org  Kansas Veterinary Examiners Board
+async function scrapeKansas() {
+  const { status, html, error } = await httpGet(
+    'www.ksvetboard.org',
+    '/Licensees/LicenseeSearch?status=Active&type=DVM&lname=&fname='
+  );
+  if (error) { console.log(`   KS: ${error}`); return []; }
+  console.log(`   KS VEB: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'KS', 'Kansas', 'KS VEB'))
+    .slice(0, 20);
+}
+
+// ── Alabama ───────────────────────────────────────────────────────────────────
+// Source: https://www.albvme.org  Alabama Board of Veterinary Medical Examiners
+async function scrapeAlabama() {
+  const { status, html, error } = await httpGet(
+    'www.albvme.org',
+    '/licensees/?status=Active&type=DVM&lname=&fname='
+  );
+  if (error) { console.log(`   AL: ${error}`); return []; }
+  console.log(`   AL BVME: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'AL', 'Alabama', 'AL BVME'))
+    .slice(0, 20);
+}
+
+// ── Mississippi ───────────────────────────────────────────────────────────────
+// Source: https://mvmb.ms.gov  Mississippi Veterinary Medical Board
+async function scrapeMississippi() {
+  const { status, html, error } = await httpGet(
+    'mvmb.ms.gov',
+    '/online-tools/verify-a-license/?type=DVM&status=Active&lname=&fname='
+  );
+  if (error) { console.log(`   MS: ${error}`); return []; }
+  console.log(`   MS VMB: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'MS', 'Mississippi', 'MS VMB'))
+    .slice(0, 20);
+}
+
+// ── Arkansas ──────────────────────────────────────────────────────────────────
+// Source: https://www.asvmb.org  Arkansas State Veterinary Medical Board
+async function scrapeArkansas() {
+  const { status, html, error } = await httpGet(
+    'www.asvmb.org',
+    '/licensees/?status=Active&lname=&fname='
+  );
+  if (error) { console.log(`   AR: ${error}`); return []; }
+  console.log(`   AR SVMB: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'AR', 'Arkansas', 'AR SVMB'))
+    .slice(0, 20);
+}
+
+// ── Nebraska ──────────────────────────────────────────────────────────────────
+// Source: https://www.nebraska.gov  NE DHHS license search
+async function scrapeNebraska() {
+  const { status, html, error } = await httpGet(
+    'www.nebraska.gov',
+    '/LISSearch/search.cgi?profession=VET&status=Active&lname=&fname='
+  );
+  if (error) { console.log(`   NE: ${error}`); return []; }
+  console.log(`   NE DHHS: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'NE', 'Nebraska', 'NE DHHS'))
+    .slice(0, 20);
+}
+
+// ── Idaho ─────────────────────────────────────────────────────────────────────
+// Source: https://dopl.idaho.gov  ID Bureau of Occupational Licenses
+async function scrapeIdaho() {
+  const { status, html, error } = await httpGet(
+    'dopl.idaho.gov',
+    '/Lists/LicenseeSearch?board=IVET&status=Active&lname=&fname='
+  );
+  if (error) { console.log(`   ID: ${error}`); return []; }
+  console.log(`   ID DOPL: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'ID', 'Idaho', 'ID DOPL'))
+    .slice(0, 20);
+}
+
+// ── Utah ──────────────────────────────────────────────────────────────────────
+// Source: https://secure.utah.gov  UT Division of Occupational and Professional Licensing
+async function scrapeUtah() {
+  const { status, html, error } = await httpGet(
+    'secure.utah.gov',
+    '/llv/llv!search.action?searchType=1&licenseType=PHYSICIAN&board=VET&status=ACTIVE&lname=&fname='
+  );
+  if (error) { console.log(`   UT: ${error}`); return []; }
+  console.log(`   UT DOPL: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'UT', 'Utah', 'UT DOPL'))
+    .slice(0, 20);
+}
+
+// ── New Mexico ────────────────────────────────────────────────────────────────
+// Source: https://www.rld.nm.gov  NM Regulation and Licensing Department
+async function scrapeNewMexico() {
+  const { status, html, error } = await httpGet(
+    'www.rld.nm.gov',
+    '/boards-and-commissions/individual-boards-and-commissions/veterinary/licensee-search/?status=Active&lname=&fname='
+  );
+  if (error) { console.log(`   NM: ${error}`); return []; }
+  console.log(`   NM RLD: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'NM', 'New Mexico', 'NM RLD'))
+    .slice(0, 20);
+}
+
+// ── Montana ───────────────────────────────────────────────────────────────────
+// Source: https://boards.bsd.dli.mt.gov  MT Board of Veterinary Medicine
+async function scrapeMontana() {
+  const { status, html, error } = await httpGet(
+    'boards.bsd.dli.mt.gov',
+    '/vet/roster.asp?status=Active&lname=&fname='
+  );
+  if (error) { console.log(`   MT: ${error}`); return []; }
+  console.log(`   MT BVME: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'MT', 'Montana', 'MT BVME'))
+    .slice(0, 20);
+}
+
+// ── North Dakota ──────────────────────────────────────────────────────────────
+// Source: https://ndbovme.nd.gov  ND Board of Veterinary Medical Examiners
+async function scrapeNorthDakota() {
+  const { status, html, error } = await httpGet(
+    'ndbovme.nd.gov',
+    '/licensees/?status=Active&lname=&fname='
+  );
+  if (error) { console.log(`   ND: ${error}`); return []; }
+  console.log(`   ND BVME: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'ND', 'North Dakota', 'ND BVME'))
+    .slice(0, 20);
+}
+
+// ── South Dakota ──────────────────────────────────────────────────────────────
+// Source: https://www.sdvmb.com  SD Veterinary Medical Board
+async function scrapeSouthDakota() {
+  const { status, html, error } = await httpGet(
+    'www.sdvmb.com',
+    '/licensee-search/?status=Active&type=DVM&lname=&fname='
+  );
+  if (error) { console.log(`   SD: ${error}`); return []; }
+  console.log(`   SD VMB: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'SD', 'South Dakota', 'SD VMB'))
+    .slice(0, 20);
+}
+
+// ── West Virginia ─────────────────────────────────────────────────────────────
+// Source: https://wvbovme.org  WV Board of Veterinary Medicine
+async function scrapeWestVirginia() {
+  const { status, html, error } = await httpGet(
+    'wvbovme.org',
+    '/licensees/?status=Active&lname=&fname='
+  );
+  if (error) { console.log(`   WV: ${error}`); return []; }
+  console.log(`   WV BVME: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'WV', 'West Virginia', 'WV BVME'))
+    .slice(0, 20);
+}
+
+// ── Delaware ──────────────────────────────────────────────────────────────────
+// Source: https://dpr.delaware.gov  DE Division of Professional Regulation
+async function scrapeDelaware() {
+  const { status, html, error } = await httpGet(
+    'dpr.delaware.gov',
+    '/boards/veterinarymedicine/index.shtml'
+  );
+  if (error) { console.log(`   DE: ${error}`); return []; }
+  console.log(`   DE DPR: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'DE', 'Delaware', 'DE DPR'))
+    .slice(0, 20);
+}
+
+// ── Vermont ───────────────────────────────────────────────────────────────────
+// Source: https://www.sec.state.vt.us  VT Secretary of State license lookup
+async function scrapeVermont() {
+  const { status, html, error } = await httpGet(
+    'www.sec.state.vt.us',
+    '/professional-regulation/license-lookup/veterinarian/?status=Active&lname=&fname='
+  );
+  if (error) { console.log(`   VT: ${error}`); return []; }
+  console.log(`   VT SOS: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'VT', 'Vermont', 'VT SOS'))
+    .slice(0, 20);
+}
+
+// ── New Hampshire ─────────────────────────────────────────────────────────────
+// Source: https://www.vet.nh.gov  NH Board of Veterinary Medicine
+async function scrapeNewHampshire() {
+  const { status, html, error } = await httpGet(
+    'www.vet.nh.gov',
+    '/licensees/?status=Active&lname=&fname='
+  );
+  if (error) { console.log(`   NH: ${error}`); return []; }
+  console.log(`   NH BVM: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'NH', 'New Hampshire', 'NH BVM'))
+    .slice(0, 20);
+}
+
+// ── Maine ─────────────────────────────────────────────────────────────────────
+// Source: https://www.maine.gov  ME Professional & Financial Regulation
+async function scrapeMaine() {
+  const { status, html, error } = await httpGet(
+    'www.maine.gov',
+    '/pfr/professionallicensing/professions/veterinarians/veterinarylist.htm'
+  );
+  if (error) { console.log(`   ME: ${error}`); return []; }
+  console.log(`   ME PFR: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'ME', 'Maine', 'ME PFR'))
+    .slice(0, 20);
+}
+
+// ── Alaska ────────────────────────────────────────────────────────────────────
+// Source: https://www.commerce.alaska.gov  AK Div of Corporations, Business & Professional Licensing
+async function scrapeAlaska() {
+  const { status, html, error } = await httpGet(
+    'www.commerce.alaska.gov',
+    '/cbp/main/Search/Professional?q=&professionCode=VETERINARIAN&status=Active'
+  );
+  if (error) { console.log(`   AK: ${error}`); return []; }
+  console.log(`   AK DCBPL: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'AK', 'Alaska', 'AK DCBPL'))
+    .slice(0, 20);
+}
+
+// ── Hawaii ────────────────────────────────────────────────────────────────────
+// Source: https://pvl.ehawaii.gov  HI Professional and Vocational Licensing
+async function scrapeHawaii() {
+  const { status, html, error } = await httpGet(
+    'pvl.ehawaii.gov',
+    '/pvlsearch/app/?profession=VET&status=ACTIVE&lname=&fname='
+  );
+  if (error) { console.log(`   HI: ${error}`); return []; }
+  console.log(`   HI PVL: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'HI', 'Hawaii', 'HI PVL'))
+    .slice(0, 20);
+}
+
+// ── Rhode Island ──────────────────────────────────────────────────────────────
+// Source: https://health.ri.gov  RI Dept of Health license verification
+async function scrapeRhodeIsland() {
+  const { status, html, error } = await httpGet(
+    'health.ri.gov',
+    '/licenses/veterinary/?status=Active&lname=&fname='
+  );
+  if (error) { console.log(`   RI: ${error}`); return []; }
+  console.log(`   RI DOH: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'RI', 'Rhode Island', 'RI DOH'))
+    .slice(0, 20);
+}
+
+// ── Wyoming ───────────────────────────────────────────────────────────────────
+// Source: https://www.wyomingboard.us  WY State Board of Veterinary Medicine
+async function scrapeWyoming() {
+  const { status, html, error } = await httpGet(
+    'www.wyomingboard.us',
+    '/veterinary/licensees/?status=Active&lname=&fname='
+  );
+  if (error) { console.log(`   WY: ${error}`); return []; }
+  console.log(`   WY SBVM: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'WY', 'Wyoming', 'WY SBVM'))
+    .slice(0, 20);
+}
+
+// ─── Canadian Provincial Licensing Board Scrapers ─────────────────────────────
+// Public regulatory registers — no API key required.
+
+// ── Alberta ───────────────────────────────────────────────────────────────────
+// Source: https://www.abvma.ca  Alberta Veterinary Medical Association
+async function scrapeAlbertaABVMA() {
+  const { status, html, error } = await httpGet(
+    'www.abvma.ca',
+    '/site/rosterdirectory?status=Active&type=DVM&lname=&fname='
+  );
+  if (error) { console.log(`   AB: ${error}`); return []; }
+  console.log(`   AB ABVMA: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|registrant)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'AB', 'Alberta, Canada', 'ABVMA'))
+    .slice(0, 20);
+}
+
+// ── British Columbia ──────────────────────────────────────────────────────────
+// Source: https://www.cvbc.ca  College of Veterinarians of British Columbia
+async function scrapeBritishColumbiaCVBC() {
+  const { status, html, error } = await httpGet(
+    'www.cvbc.ca',
+    '/online-registry/?status=Active&type=DVM&lname=&fname='
+  );
+  if (error) { console.log(`   BC: ${error}`); return []; }
+  console.log(`   BC CVBC: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|registrant)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'BC', 'British Columbia, Canada', 'CVBC'))
+    .slice(0, 20);
+}
+
+// ── Ontario ───────────────────────────────────────────────────────────────────
+// Source: https://cvo.org  College of Veterinarians of Ontario (~4,500 registrants)
+async function scrapeOntarioCVO() {
+  const { status, html, error } = await httpGet(
+    'cvo.ca.thentiacloud.net',
+    '/webs/cvo/register/?status=Active&type=DVM&lname=&fname='
+  );
+  if (error) { console.log(`   ON: ${error}`); return []; }
+  console.log(`   ON CVO: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|registrant)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'ON', 'Ontario, Canada', 'CVO Ontario'))
+    .slice(0, 20);
+}
+
+// ── Manitoba ──────────────────────────────────────────────────────────────────
+// Source: https://www.mvma.ca  Manitoba Veterinary Medical Association
+async function scrapeManitobaMVMA() {
+  const { status, html, error } = await httpGet(
+    'www.mvma.ca',
+    '/directory/?status=Active&type=DVM&lname=&fname='
+  );
+  if (error) { console.log(`   MB: ${error}`); return []; }
+  console.log(`   MB MVMA: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|registrant)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'MB', 'Manitoba, Canada', 'MB MVMA'))
+    .slice(0, 20);
+}
+
+// ── Saskatchewan ─────────────────────────────────────────────────────────────
+// Source: https://www.svma.sk.ca  Saskatchewan Veterinary Medical Association
+async function scrapeSaskatchewanSVMA() {
+  const { status, html, error } = await httpGet(
+    'www.svma.sk.ca',
+    '/members/member-directory/?status=Active'
+  );
+  if (error) { console.log(`   SK: ${error}`); return []; }
+  console.log(`   SK SVMA: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|registrant)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'SK', 'Saskatchewan, Canada', 'SK SVMA'))
+    .slice(0, 20);
+}
+
+// ─── US State VMA "Find a Vet" Directory Scrapers ─────────────────────────────
+// Professional association member directories — public, no login required.
+// These surface practicing DVMs including Medical Directors and specialists.
+
+// ── Florida FVMA ──────────────────────────────────────────────────────────────
+// Source: https://members.fvma.org  FVMA "Find a Vet" member directory
+async function scrapeFVMAFlorida() {
+  const { status, html, error } = await httpGet(
+    'members.fvma.org',
+    '/directory/findvet/personresults.html'
+  );
+  if (error) { console.log(`   FVMA FL: ${error}`); return []; }
+  console.log(`   FVMA Florida: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 2 && c[0] && !/^(name|doctor)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[2] || '', 'FL', 'Florida', 'FVMA Directory', 'Veterinarian (FVMA Member)'))
+    .slice(0, 20);
+}
+
+// ── Georgia GVMA ─────────────────────────────────────────────────────────────
+// Source: https://gvma.net  GVMA "Find a Vet / Find a Specialist"
+async function scrapeGVMAGeorgia() {
+  const { status, html, error } = await httpGet(
+    'gvma.net',
+    '/directory-search/?type=member&specialty=&city=&state=GA'
+  );
+  if (error) { console.log(`   GVMA GA: ${error}`); return []; }
+  console.log(`   GVMA Georgia: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 2 && c[0] && !/^(name|doctor)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[2] || '', 'GA', 'Georgia', 'GVMA Directory', 'Veterinarian (GVMA Member)'))
+    .slice(0, 20);
+}
+
+// ── Massachusetts MVMA ────────────────────────────────────────────────────────
+// Source: https://www.massvet.org  MVMA "Find a Veterinarian" directory
+async function scrapeMVMAMassachusetts() {
+  const { status, html, error } = await httpGet(
+    'www.massvet.org',
+    '/find-a-veterinarian-directory?type=&service=&city=&state=MA'
+  );
+  if (error) { console.log(`   MVMA MA: ${error}`); return []; }
+  console.log(`   MVMA Massachusetts: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 2 && c[0] && !/^(name|doctor)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[2] || '', 'MA', 'Massachusetts', 'MVMA Directory', 'Veterinarian (MVMA Member)'))
+    .slice(0, 20);
+}
+
+// ── Minnesota MVMA ────────────────────────────────────────────────────────────
+// Source: https://www.mvma.org  MVMA member directory
+async function scrapeMVMAMinnesota() {
+  const { status, html, error } = await httpGet(
+    'www.mvma.org',
+    '/directory/?type=member&city=&state=MN'
+  );
+  if (error) { console.log(`   MVMA MN: ${error}`); return []; }
+  console.log(`   MVMA Minnesota: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 2 && c[0] && !/^(name|doctor)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[2] || '', 'MN', 'Minnesota', 'MVMA-MN Directory', 'Veterinarian (MVMA-MN Member)'))
+    .slice(0, 20);
+}
+
+// ── Washington WSVMA ──────────────────────────────────────────────────────────
+// Source: https://mycommunity.wsvma.org  WSVMA member search
+async function scrapeWSVMAWashington() {
+  const { status, html, error } = await httpGet(
+    'mycommunity.wsvma.org',
+    '/search/?type=member&city=&state=WA'
+  );
+  if (error) { console.log(`   WSVMA WA: ${error}`); return []; }
+  console.log(`   WSVMA Washington: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 2 && c[0] && !/^(name|doctor)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[2] || '', 'WA', 'Washington', 'WSVMA Directory', 'Veterinarian (WSVMA Member)'))
+    .slice(0, 20);
+}
+
+// ── California CVMA ───────────────────────────────────────────────────────────
+// Source: https://cvma.net  CVMA "Find a Veterinarian"
+async function scrapeCVMACalifornia() {
+  const { status, html, error } = await httpGet(
+    'cvma.net',
+    '/find-a-veterinarian/?city=&state=CA&specialty='
+  );
+  if (error) { console.log(`   CVMA CA: ${error}`); return []; }
+  console.log(`   CVMA California: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 2 && c[0] && !/^(name|doctor)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[2] || '', 'CA', 'California', 'CVMA Directory', 'Veterinarian (CVMA Member)'))
+    .slice(0, 20);
+}
+
+// ── Texas TVMA ────────────────────────────────────────────────────────────────
+// Source: https://www.tvma.org  TVMA member directory
+async function scrapeTVMATexas() {
+  const { status, html, error } = await httpGet(
+    'www.tvma.org',
+    '/find-a-vet/?city=&state=TX&specialty='
+  );
+  if (error) { console.log(`   TVMA TX: ${error}`); return []; }
+  console.log(`   TVMA Texas: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 2 && c[0] && !/^(name|doctor)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[2] || '', 'TX', 'Texas', 'TVMA Directory', 'Veterinarian (TVMA Member)'))
+    .slice(0, 20);
+}
+
+// ── New Hampshire NHVMA ───────────────────────────────────────────────────────
+// Source: https://www.nhvma.com  NHVMA hospital and specialty directory
+async function scrapeNHVMA() {
+  const { status, html, error } = await httpGet(
+    'www.nhvma.com',
+    '/find-a-vet'
+  );
+  if (error) { console.log(`   NHVMA NH: ${error}`); return []; }
+  console.log(`   NHVMA New Hampshire: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 2 && c[0] && !/^(name|doctor)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[2] || '', 'NH', 'New Hampshire', 'NHVMA Directory', 'Veterinarian (NHVMA Member)'))
+    .slice(0, 20);
+}
+
+// ─── Equine Specialty Scrapers ─────────────────────────────────────────────────
+// AAEP = American Association of Equine Practitioners (~10,000 members)
+// Public "Find a Vet" directory for horse owners seeking equine DVMs.
+
+// ── AAEP Find a Veterinarian ──────────────────────────────────────────────────
+async function scrapeAAEPEquine() {
+  const { status, html, error } = await httpGet(
+    'www.aaep.org',
+    '/find-a-veterinarian?location=&specialty=&distance=100'
+  );
+  if (error) { console.log(`   AAEP: ${error}`); return []; }
+  console.log(`   AAEP Equine: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 2 && c[0] && !/^(name|doctor)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[2] || c[1] || '', 'US', 'United States', 'AAEP Directory', 'Equine Veterinarian (AAEP Member)'))
+    .slice(0, 25);
+}
+
+// ─── Relief / Locum Vet Scrapers ──────────────────────────────────────────────
+// ReliefVets.com is the largest public relief vet marketplace.
+// Their "Find Relief Vets" public directory lists available relief DVMs by state.
+
+async function scrapeReliefVets() {
+  const { status, html, error } = await httpGet(
+    'www.reliefvets.com',
+    '/find-relief-vets?specialty=&state=&distance='
+  );
+  if (error) { console.log(`   ReliefVets: ${error}`); return []; }
+  console.log(`   ReliefVets.com: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 2 && c[0] && !/^(name|doctor)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[2] || '', 'US', 'United States', 'ReliefVets.com', 'Relief Veterinarian'))
+    .slice(0, 25);
+}
+
 // ── Orchestrator ──────────────────────────────────────────────────────────────
 /**
  * Runs all state board scrapers in parallel. Each fails safely.
- * Targets the 12 states with active Thrive requisitions.
+ * Covers all 50 US states.
  */
 async function fetchStateLicenseBoardCandidates() {
   const scrapers = [
-    { label: 'Florida',       fn: scrapeFloridaDBPR    },
-    { label: 'California',    fn: scrapeCaliforniaDCA  },
-    { label: 'Texas',         fn: scrapeTexasTVMB      },
-    { label: 'New York',      fn: scrapeNewYorkNYSED   },
-    { label: 'Illinois',      fn: scrapeIllinoisIDFPR  },
-    { label: 'Ohio',          fn: scrapeOhioELicense   },
-    { label: 'Massachusetts', fn: scrapeMassachusetts  },
-    { label: 'Connecticut',   fn: scrapeConnecticut    },
-    { label: 'Maryland',      fn: scrapeMaryland       },
-    { label: 'Tennessee',     fn: scrapeTennessee      },
-    { label: 'Arizona',       fn: scrapeArizona        },
-    { label: 'Colorado',      fn: scrapeColorado       },
+    { label: 'Florida',        fn: scrapeFloridaDBPR     },
+    { label: 'California',     fn: scrapeCaliforniaDCA   },
+    { label: 'Texas',          fn: scrapeTexasTVMB       },
+    { label: 'New York',       fn: scrapeNewYorkNYSED    },
+    { label: 'Illinois',       fn: scrapeIllinoisIDFPR   },
+    { label: 'Ohio',           fn: scrapeOhioELicense    },
+    { label: 'Massachusetts',  fn: scrapeMassachusetts   },
+    { label: 'Connecticut',    fn: scrapeConnecticut     },
+    { label: 'Maryland',       fn: scrapeMaryland        },
+    { label: 'Tennessee',      fn: scrapeTennessee       },
+    { label: 'Arizona',        fn: scrapeArizona         },
+    { label: 'Colorado',       fn: scrapeColorado        },
+    // New states
+    { label: 'Virginia',       fn: scrapeVirginia        },
+    { label: 'North Carolina', fn: scrapeNorthCarolina   },
+    { label: 'Georgia',        fn: scrapeGeorgia         },
+    { label: 'Michigan',       fn: scrapeMichigan        },
+    { label: 'Pennsylvania',   fn: scrapePennsylvania    },
+    { label: 'Washington',     fn: scrapeWashington      },
+    { label: 'Oregon',         fn: scrapeOregon          },
+    { label: 'Nevada',         fn: scrapeNevada          },
+    { label: 'Minnesota',      fn: scrapeMinnesota       },
+    { label: 'Wisconsin',      fn: scrapeWisconsin       },
+    { label: 'Indiana',        fn: scrapeIndiana         },
+    { label: 'Missouri',       fn: scrapeMissouri        },
+    { label: 'New Jersey',     fn: scrapeNewJersey       },
+    { label: 'Oklahoma',       fn: scrapeOklahoma        },
+    { label: 'South Carolina', fn: scrapeSouthCarolina   },
+    { label: 'Kentucky',       fn: scrapeKentucky        },
+    { label: 'Louisiana',      fn: scrapeLouisiana       },
+    { label: 'Iowa',           fn: scrapeIowa            },
+    { label: 'Kansas',         fn: scrapeKansas          },
+    { label: 'Alabama',        fn: scrapeAlabama         },
+    { label: 'Mississippi',    fn: scrapeMississippi     },
+    { label: 'Arkansas',       fn: scrapeArkansas        },
+    { label: 'Nebraska',       fn: scrapeNebraska        },
+    { label: 'Idaho',          fn: scrapeIdaho           },
+    { label: 'Utah',           fn: scrapeUtah            },
+    { label: 'New Mexico',     fn: scrapeNewMexico       },
+    { label: 'Montana',        fn: scrapeMontana         },
+    { label: 'North Dakota',   fn: scrapeNorthDakota     },
+    { label: 'South Dakota',   fn: scrapeSouthDakota     },
+    { label: 'West Virginia',  fn: scrapeWestVirginia    },
+    { label: 'Delaware',       fn: scrapeDelaware        },
+    { label: 'Vermont',        fn: scrapeVermont         },
+    { label: 'New Hampshire',  fn: scrapeNewHampshire    },
+    { label: 'Maine',          fn: scrapeMaine           },
+    { label: 'Alaska',         fn: scrapeAlaska          },
+    { label: 'Hawaii',         fn: scrapeHawaii          },
+    { label: 'Rhode Island',   fn: scrapeRhodeIsland     },
+    { label: 'Wyoming',        fn: scrapeWyoming         },
   ];
 
   const results = await Promise.allSettled(scrapers.map(s => s.fn()));
@@ -434,9 +1332,83 @@ async function fetchStateLicenseBoardCandidates() {
     } else if (result.status === 'rejected') {
       console.log(`   ✗ ${scrapers[i].label}: ${result.reason}`);
     }
-    // 0-result states already logged inside their own scraper
   });
 
+  return allCandidates;
+}
+
+/**
+ * Runs all Canadian provincial regulatory board scrapers in parallel.
+ */
+async function fetchCanadianBoardCandidates() {
+  const scrapers = [
+    { label: 'Alberta (ABVMA)',          fn: scrapeAlbertaABVMA        },
+    { label: 'British Columbia (CVBC)',   fn: scrapeBritishColumbiaCVBC },
+    { label: 'Ontario (CVO)',             fn: scrapeOntarioCVO          },
+    { label: 'Manitoba (MVMA)',           fn: scrapeManitobaMVMA        },
+    { label: 'Saskatchewan (SVMA)',       fn: scrapeSaskatchewanSVMA    },
+  ];
+
+  const results = await Promise.allSettled(scrapers.map(s => s.fn()));
+  const allCandidates = [];
+  results.forEach((result, i) => {
+    if (result.status === 'fulfilled' && result.value.length > 0) {
+      console.log(`   ✓ ${scrapers[i].label}: ${result.value.length} registrants`);
+      allCandidates.push(...result.value);
+    } else if (result.status === 'rejected') {
+      console.log(`   ✗ ${scrapers[i].label}: ${result.reason}`);
+    }
+  });
+  return allCandidates;
+}
+
+/**
+ * Runs all state VMA "Find a Vet" directory scrapers in parallel.
+ */
+async function fetchVMADirectoryCandidates() {
+  const scrapers = [
+    { label: 'FL FVMA',    fn: scrapeFVMAFlorida       },
+    { label: 'GA GVMA',    fn: scrapeGVMAGeorgia       },
+    { label: 'MA MVMA',    fn: scrapeMVMAMassachusetts  },
+    { label: 'MN MVMA',    fn: scrapeMVMAMinnesota      },
+    { label: 'WA WSVMA',   fn: scrapeWSVMAWashington   },
+    { label: 'CA CVMA',    fn: scrapeCVMACalifornia     },
+    { label: 'TX TVMA',    fn: scrapeTVMATexas          },
+    { label: 'NH NHVMA',   fn: scrapeNHVMA              },
+  ];
+
+  const results = await Promise.allSettled(scrapers.map(s => s.fn()));
+  const allCandidates = [];
+  results.forEach((result, i) => {
+    if (result.status === 'fulfilled' && result.value.length > 0) {
+      console.log(`   ✓ ${scrapers[i].label}: ${result.value.length} members`);
+      allCandidates.push(...result.value);
+    } else if (result.status === 'rejected') {
+      console.log(`   ✗ ${scrapers[i].label}: ${result.reason}`);
+    }
+  });
+  return allCandidates;
+}
+
+/**
+ * Runs equine and relief/locum specialty scrapers in parallel.
+ */
+async function fetchSpecialtyCandidates() {
+  const scrapers = [
+    { label: 'AAEP Equine Directory',  fn: scrapeAAEPEquine  },
+    { label: 'ReliefVets.com',         fn: scrapeReliefVets  },
+  ];
+
+  const results = await Promise.allSettled(scrapers.map(s => s.fn()));
+  const allCandidates = [];
+  results.forEach((result, i) => {
+    if (result.status === 'fulfilled' && result.value.length > 0) {
+      console.log(`   ✓ ${scrapers[i].label}: ${result.value.length} candidates`);
+      allCandidates.push(...result.value);
+    } else if (result.status === 'rejected') {
+      console.log(`   ✗ ${scrapers[i].label}: ${result.reason}`);
+    }
+  });
   return allCandidates;
 }
 
@@ -522,10 +1494,25 @@ class CandidateSourcer {
       allResults.push(...pdlCandidates);
     }
 
-    // ── Source 3: State licensing boards (no key needed) ─────────────────────
-    console.log('🏛️  Querying state veterinary licensing boards (public records)...');
+    // ── Source 3: US State licensing boards — all 50 states (no key needed) ──
+    console.log('🏛️  Querying US state veterinary licensing boards (all 50 states)...');
     const stateCandidates = await fetchStateLicenseBoardCandidates();
     allResults.push(...stateCandidates);
+
+    // ── Source 4: Canadian provincial regulatory boards ───────────────────────
+    console.log('🍁  Querying Canadian provincial veterinary regulatory boards...');
+    const canadianCandidates = await fetchCanadianBoardCandidates();
+    allResults.push(...canadianCandidates);
+
+    // ── Source 5: US state VMA "Find a Vet" member directories ───────────────
+    console.log('🐾  Querying state VMA association directories...');
+    const vmaCandidates = await fetchVMADirectoryCandidates();
+    allResults.push(...vmaCandidates);
+
+    // ── Source 6: Equine (AAEP) + Relief/Locum specialty directories ─────────
+    console.log('🐴  Querying equine and relief/locum specialty directories...');
+    const specialtyCandidates = await fetchSpecialtyCandidates();
+    allResults.push(...specialtyCandidates);
 
     // ── No data at all ────────────────────────────────────────────────────────
     if (allResults.length === 0) {
