@@ -156,10 +156,113 @@ async function fetchPDLCandidates() {
   });
 }
 
+// ─── NPI Registry (CMS) ──────────────────────────────────────────────────────
+// The National Provider Identifier registry is a FREE public API from CMS.
+// No API key required. Covers every US-licensed veterinarian.
+// Taxonomy group 138F = Veterinarians (general, equine, large animal, etc.)
+// Docs: https://npiregistry.cms.hhs.gov/search
+
+/**
+ * Generic HTTPS GET that parses and returns JSON. Returns null on any error.
+ */
+function httpGetJSON(hostname, path) {
+  return new Promise((resolve) => {
+    const req = https.request({
+      hostname,
+      path,
+      method: 'GET',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; VetMD-Sourcer/1.0)',
+        'Accept': 'application/json'
+      }
+    }, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)); }
+        catch (e) { resolve(null); }
+      });
+    });
+    req.on('error', () => resolve(null));
+    req.setTimeout(20000, () => { req.destroy(); resolve(null); });
+    req.end();
+  });
+}
+
+/**
+ * Fetches veterinarians from the free CMS NPI Registry API.
+ * Runs three searches: general veterinarians, equine, and large animal.
+ * Returns up to 600 real, verified US veterinarian records per run — no key needed.
+ */
+async function fetchNPIRegistryCandidates() {
+  // NPI taxonomy searches — each returns up to 200 records
+  const searches = [
+    { param: 'veterinarian',  titleFallback: null },
+    { param: 'equine',        titleFallback: 'Equine Veterinarian' },
+    { param: 'large+animal',  titleFallback: 'Large Animal Veterinarian' },
+  ];
+
+  const all = [];
+
+  for (const { param, titleFallback } of searches) {
+    const json = await httpGetJSON(
+      'npiregistry.cms.hhs.gov',
+      `/api/?version=2.1&taxonomy_description=${param}&limit=200&skip=0`
+    );
+
+    if (!json || !Array.isArray(json.results)) {
+      console.log(`   NPI (${param}): no results or parse error`);
+      continue;
+    }
+
+    for (const p of json.results) {
+      const basic   = p.basic || {};
+      // Prefer practice location address; fall back to mailing
+      const addr    = (p.addresses || []).find(a => a.address_purpose === 'LOCATION')
+                   || (p.addresses || [])[0]
+                   || {};
+      const tax     = (p.taxonomies || []).find(t => t.primary)
+                   || (p.taxonomies || [])[0]
+                   || {};
+
+      // Build full name — NPI stores first/last (individual) or org name
+      let name;
+      if (basic.organizational_name) {
+        name = basic.organizational_name;
+      } else {
+        name = [basic.first_name, basic.middle_name, basic.last_name]
+          .filter(Boolean).join(' ');
+        if (basic.credential) name += `, ${basic.credential}`;
+      }
+
+      if (!name || !name.trim()) continue;
+
+      all.push({
+        name:        name.trim(),
+        title:       titleFallback || tax.desc || 'Veterinarian',
+        location:    addr.city
+                       ? `${addr.city}, ${addr.state}`
+                       : (addr.state || 'Unknown'),
+        experience:  'Unknown',
+        source:      'NPI Registry (CMS)',
+        email:       '',
+        linkedinUrl: ''
+      });
+    }
+
+    console.log(`   NPI (${param}): ${json.result_count || json.results.length} total / ${json.results.length} fetched`);
+  }
+
+  console.log(`✅ NPI Registry: ${all.length} veterinarians pulled.`);
+  return all;
+}
+
 // ─── State licensing board scrapers ──────────────────────────────────────────
 // All state boards are public records — no API key required.
 // Each scraper fails gracefully: timeouts and parse errors return [] not throws.
-// States targeted: FL, CA, TX, NY, IL, OH, MA, CT, MD, TN, AZ, CO
+// NOTE: State board sites vary widely. Scrapers marked (JS-heavy) will likely
+// return 0 until their URL/POST body is tuned against the live site.
+// The NPI Registry above is the reliable always-on replacement source.
 
 /**
  * Generic HTTP GET helper. Returns { status, html } or { status: 0, html: '', error }.
@@ -1476,7 +1579,14 @@ class CandidateSourcer {
     const allResults = [];
     let apiSourceConfigured = false;
 
-    // ── Source 1: Apollo.io ───────────────────────────────────────────────────
+    // ── Source 1: NPI Registry (FREE — no key, always runs) ──────────────────
+    // CMS National Provider Identifier registry — every licensed US veterinarian.
+    // Returns real names, cities, states, specialties. Up to 600 records/run.
+    console.log('🏥  Querying NPI Registry (CMS) — free, no key required...');
+    const npiCandidates = await fetchNPIRegistryCandidates();
+    allResults.push(...npiCandidates);
+
+    // ── Source 2: Apollo.io ───────────────────────────────────────────────────
     const apolloCandidates = await fetchApolloCandidates();
     if (apolloCandidates === null) {
       console.log('⏭️  Apollo.io: not configured (set APOLLO_API_KEY in .env; requires paid plan)');
@@ -1485,7 +1595,7 @@ class CandidateSourcer {
       allResults.push(...apolloCandidates);
     }
 
-    // ── Source 2: People Data Labs ────────────────────────────────────────────
+    // ── Source 3: People Data Labs ────────────────────────────────────────────
     const pdlCandidates = await fetchPDLCandidates();
     if (pdlCandidates === null) {
       console.log('⏭️  People Data Labs: not configured (set PDL_API_KEY in .env; 100 free calls/month)');
@@ -1494,22 +1604,22 @@ class CandidateSourcer {
       allResults.push(...pdlCandidates);
     }
 
-    // ── Source 3: US State licensing boards — all 50 states (no key needed) ──
+    // ── Source 4: US State licensing boards — all 50 states (no key needed) ──
     console.log('🏛️  Querying US state veterinary licensing boards (all 50 states)...');
     const stateCandidates = await fetchStateLicenseBoardCandidates();
     allResults.push(...stateCandidates);
 
-    // ── Source 4: Canadian provincial regulatory boards ───────────────────────
+    // ── Source 5: Canadian provincial regulatory boards ───────────────────────
     console.log('🍁  Querying Canadian provincial veterinary regulatory boards...');
     const canadianCandidates = await fetchCanadianBoardCandidates();
     allResults.push(...canadianCandidates);
 
-    // ── Source 5: US state VMA "Find a Vet" member directories ───────────────
+    // ── Source 6: US state VMA "Find a Vet" member directories ───────────────
     console.log('🐾  Querying state VMA association directories...');
     const vmaCandidates = await fetchVMADirectoryCandidates();
     allResults.push(...vmaCandidates);
 
-    // ── Source 6: Equine (AAEP) + Relief/Locum specialty directories ─────────
+    // ── Source 7: Equine (AAEP) + Relief/Locum specialty directories ─────────
     console.log('🐴  Querying equine and relief/locum specialty directories...');
     const specialtyCandidates = await fetchSpecialtyCandidates();
     allResults.push(...specialtyCandidates);
