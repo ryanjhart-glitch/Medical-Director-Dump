@@ -191,27 +191,35 @@ function httpGetJSON(hostname, path) {
 
 /**
  * Fetches veterinarians from the free CMS NPI Registry API.
- * Runs three searches: general veterinarians, equine, and large animal.
- * Returns up to 600 real, verified US veterinarian records per run — no key needed.
+ * Uses NPI taxonomy codes (138F group) — more precise than text search.
+ *   138F00000X = Veterinarian (general)
+ *   138F00002X = Equine
+ *   138F00001X = Large Animal
+ *   138F00005X = Small Animal
+ * Returns up to 800 real, verified US vet records per run — no key needed.
  */
 async function fetchNPIRegistryCandidates() {
-  // NPI taxonomy searches — each returns up to 200 records
   const searches = [
-    { param: 'veterinarian',  titleFallback: null },
-    { param: 'equine',        titleFallback: 'Equine Veterinarian' },
-    { param: 'large+animal',  titleFallback: 'Large Animal Veterinarian' },
+    { code: '138F00000X', label: 'general',      titleFallback: null },
+    { code: '138F00005X', label: 'small animal',  titleFallback: 'Small Animal Veterinarian' },
+    { code: '138F00002X', label: 'equine',        titleFallback: 'Equine Veterinarian' },
+    { code: '138F00001X', label: 'large animal',  titleFallback: 'Large Animal Veterinarian' },
   ];
 
   const all = [];
 
-  for (const { param, titleFallback } of searches) {
+  for (const { code, label, titleFallback } of searches) {
     const json = await httpGetJSON(
       'npiregistry.cms.hhs.gov',
-      `/api/?version=2.1&taxonomy_description=${param}&limit=200&skip=0`
+      `/api/?version=2.1&taxonomy_code=${code}&enumeration_type=NPI-1&limit=200&skip=0`
     );
 
-    if (!json || !Array.isArray(json.results)) {
-      console.log(`   NPI (${param}): no results or parse error`);
+    if (!json) {
+      console.log(`   NPI (${label}): request failed or timed out`);
+      continue;
+    }
+    if (!Array.isArray(json.results)) {
+      console.log(`   NPI (${label}): unexpected response — result_count=${json.result_count ?? 'N/A'}`);
       continue;
     }
 
@@ -250,7 +258,7 @@ async function fetchNPIRegistryCandidates() {
       });
     }
 
-    console.log(`   NPI (${param}): ${json.result_count || json.results.length} total / ${json.results.length} fetched`);
+    console.log(`   NPI (${label}): ${json.result_count ?? '?'} total in registry / ${json.results.length} fetched`);
   }
 
   console.log(`✅ NPI Registry: ${all.length} veterinarians pulled.`);
@@ -527,11 +535,12 @@ async function scrapeTennessee() {
 }
 
 // ── Arizona ───────────────────────────────────────────────────────────────────
-// Source: https://veterinaryboard.az.gov  AZ State Veterinary Medical Examining Board
+// Source: https://vetboard.az.gov  AZ State Veterinary Medical Examining Board
+// Public licensee directory — returns HTML table of active licensees.
 async function scrapeArizona() {
   const { status, html, error } = await httpGet(
-    'veterinaryboard.az.gov',
-    '/licensee-search/?status=active'
+    'vetboard.az.gov',
+    '/licensee-directory-1'
   );
   if (error) { console.log(`   AZ: ${error}`); return []; }
   console.log(`   AZ Vet Board: HTTP ${status}`);
@@ -709,18 +718,11 @@ async function scrapeWisconsin() {
 }
 
 // ── Indiana ───────────────────────────────────────────────────────────────────
-// Source: https://mylicense.in.gov  IN Professional Licensing Agency
+// mylicense.in.gov returns the search FORM on GET — results require POST with
+// ASP.NET ViewState. Disabled until POST body is captured from live browser.
 async function scrapeIndiana() {
-  const { status, html, error } = await httpGet(
-    'mylicense.in.gov',
-    '/everification/Search.aspx?profession=VETERINARIAN&status=A&lastName=&firstName=&city='
-  );
-  if (error) { console.log(`   IN: ${error}`); return []; }
-  console.log(`   IN PLA: HTTP ${status}`);
-  return extractTableRows(html)
-    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
-    .map(c => makeCandidate(c[0], c[3] || '', 'IN', 'Indiana', 'IN PLA'))
-    .slice(0, 20);
+  // TODO: capture __VIEWSTATE and POST body from live browser session
+  return [];
 }
 
 // ── Missouri ──────────────────────────────────────────────────────────────────
@@ -1548,6 +1550,23 @@ class CandidateSourcer {
       email: candidate.email || '',
       linkedinUrl: candidate.linkedinUrl || ''
     };
+
+    // ── Name sanity guard ───────────────────────────────────────────────────
+    // Reject HTML form artifacts that some board scrapers pick up as rows:
+    // form field labels ("Profession:", "License Type:"), dropdown option lists
+    // ("AA AE AK AL..."), pure numbers, and single-character strings.
+    const n = newCandidate.name;
+    if (
+      n === 'Unknown'                               ||  // no name at all
+      n.endsWith(':')                               ||  // form label: "Profession:"
+      n.length < 4                                  ||  // too short
+      /^\d+$/.test(n)                               ||  // pure number
+      /^([A-Z]{2}\s+){3,}/.test(n)                 ||  // state abbr list "AA AE AK AL..."
+      /^(--All--|--Select|-+$)/i.test(n)            ||  // dropdown placeholder
+      /^(profession|license|status|doing business|name|type|number|city|state|zip|county|country)/i.test(n)
+    ) {
+      return false;
+    }
 
     const exists = this.candidates.some(c =>
       c.name.toLowerCase() === newCandidate.name.toLowerCase() &&
