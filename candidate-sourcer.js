@@ -1715,8 +1715,11 @@ class CandidateSourcer {
 }
 
 const sourcer = new CandidateSourcer();
-sourcer.sourceCandidates().then(() => {
-  sourcer.generateReport();
-});
+sourcer.sourceCandidates()
+  .then(() => sourcer.generateReport())
+  .catch(err => {
+    console.error('❌ Fatal error in candidate sourcer:', err);
+    process.exit(1);
+  });
 
 module.exports = CandidateSourcer;

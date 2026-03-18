@@ -123,21 +123,24 @@ async function sendDailyReport(addedCount, totalCount, newCandidates, allCandida
 
   const dateStamp = new Date().toISOString().slice(0, 10);
 
-  await transporter.sendMail({
-    from: EMAIL_FROM,
-    to: EMAIL_TO,
-    subject,
-    html,
-    attachments: [
-      {
-        filename: `vet-md-candidates-${dateStamp}.xlsx`,
-        content: xlsxBuffer,
-        contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-      }
-    ]
-  });
-
-  console.log(`📧 Daily report emailed to ${EMAIL_TO}`);
+  try {
+    await transporter.sendMail({
+      from: EMAIL_FROM,
+      to: EMAIL_TO,
+      subject,
+      html,
+      attachments: [
+        {
+          filename: `vet-md-candidates-${dateStamp}.xlsx`,
+          content: xlsxBuffer,
+          contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        }
+      ]
+    });
+    console.log(`📧 Daily report emailed to ${EMAIL_TO}`);
+  } catch (err) {
+    console.error(`⚠️  Email send failed (run still succeeded): ${err.message}`);
+  }
 }
 
 module.exports = { sendDailyReport };
