@@ -142,143 +142,302 @@ async function fetchPDLCandidates() {
   });
 }
 
-/**
- * Scrapes public veterinary license data from state licensing boards.
- * No API key required — these are public government records.
- * Currently supports: Florida DBPR.
- */
-async function fetchStateLicenseBoardCandidates() {
-  const allCandidates = [];
-
-  // Florida Department of Business and Professional Regulation (DBPR)
-  // Veterinary Medicine board — public license lookup, no key needed
-  try {
-    console.log('   Querying Florida DBPR (Veterinary Medicine board)...');
-    const flCandidates = await scrapeFloridaDBPR();
-    if (flCandidates.length > 0) {
-      console.log(`   Florida DBPR: found ${flCandidates.length} active licensees.`);
-      allCandidates.push(...flCandidates);
-    } else {
-      console.log('   Florida DBPR: 0 results (site may have changed; check manually at myfloridalicense.com).');
-    }
-  } catch (e) {
-    console.log('⚠️  Florida DBPR scrape failed:', e.message);
-  }
-
-  return allCandidates;
-}
+// ─── State licensing board scrapers ──────────────────────────────────────────
+// All state boards are public records — no API key required.
+// Each scraper fails gracefully: timeouts and parse errors return [] not throws.
+// States targeted: FL, CA, TX, NY, IL, OH, MA, CT, MD, TN, AZ, CO
 
 /**
- * Queries Florida DBPR public license lookup.
- * Board 0500 = Veterinary Medicine. Returns active licensees only.
- * Source URL: https://www.myfloridalicense.com/wl11.asp
+ * Generic HTTP GET helper. Returns { status, html } or { status: 0, html: '', error }.
  */
-function scrapeFloridaDBPR() {
-  // Search all license types on the Veterinary Medicine board, active licenses only
-  const params = 'mode=0&brd=0500&typ=&lic=&nm=&cty=&zip=&cntry=0&con=&adr=&i=1';
-
+function httpGet(hostname, path, extraHeaders = {}) {
   return new Promise((resolve) => {
     const req = https.request({
-      hostname: 'www.myfloridalicense.com',
-      path: `/wl11.asp?${params}`,
+      hostname,
+      path,
       method: 'GET',
       headers: {
         'User-Agent': 'Mozilla/5.0 (compatible; VetMD-Sourcer/1.0; public records lookup)',
-        'Accept': 'text/html,application/xhtml+xml'
+        'Accept': 'text/html,application/xhtml+xml',
+        ...extraHeaders
       }
     }, (res) => {
-      // Handle redirects
       if (res.statusCode === 301 || res.statusCode === 302) {
-        console.log(`   Florida DBPR redirected to: ${res.headers.location}`);
-        resolve([]);
+        resolve({ status: res.statusCode, html: '', redirect: res.headers.location });
         return;
       }
-
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        try {
-          console.log(`   Florida DBPR HTTP status: ${res.statusCode}`);
-          const candidates = parseFloridaDBPRHtml(data);
-          resolve(candidates);
-        } catch (e) {
-          console.log('⚠️  Florida DBPR parse error:', e.message);
-          resolve([]);
-        }
-      });
+      let html = '';
+      res.on('data', chunk => html += chunk);
+      res.on('end', () => resolve({ status: res.statusCode, html }));
     });
-    req.on('error', (e) => {
-      console.log('⚠️  Florida DBPR request failed:', e.message);
-      resolve([]);
-    });
+    req.on('error', e => resolve({ status: 0, html: '', error: e.message }));
     req.setTimeout(15000, () => {
-      console.log('⚠️  Florida DBPR request timed out.');
       req.destroy();
-      resolve([]);
+      resolve({ status: 0, html: '', error: 'timeout' });
     });
     req.end();
   });
 }
 
 /**
- * Parses Florida DBPR HTML search results into candidate objects.
- * Extracts licensee name, city, and license status from the results table.
- * Only returns rows where status is "Current" (active license).
+ * Extracts text from all <td> cells in each <tr> row of an HTML string.
+ * Returns array of string arrays (one per row), skipping rows with no <td>.
  */
-function parseFloridaDBPRHtml(html) {
-  const candidates = [];
-
-  // DBPR results table rows — each <tr> holds one licensee
+function extractTableRows(html) {
+  const rows = [];
   const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
   let rowMatch;
-  let headerSkipped = false;
-
   while ((rowMatch = rowRegex.exec(html)) !== null) {
     const rowHtml = rowMatch[1];
-
-    // Skip rows without <td> cells (header rows use <th>)
     if (!/<td/i.test(rowHtml)) continue;
-    if (!headerSkipped) { headerSkipped = true; continue; }
-
-    // Extract all <td> cell text, stripping inner HTML tags
     const cells = [];
     const cellRegex = /<td[^>]*>([\s\S]*?)<\/td>/gi;
     let cellMatch;
     while ((cellMatch = cellRegex.exec(rowHtml)) !== null) {
-      const text = cellMatch[1]
-        .replace(/<[^>]+>/g, '')   // strip HTML tags
-        .replace(/&amp;/g, '&')
-        .replace(/&nbsp;/g, ' ')
-        .replace(/&#\d+;/g, '')
-        .trim();
-      cells.push(text);
+      cells.push(cellMatch[1]
+        .replace(/<[^>]+>/g, '')
+        .replace(/&amp;/g, '&').replace(/&nbsp;/g, ' ')
+        .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+        .replace(/&#?\w+;/g, '').trim());
     }
-
-    // Florida DBPR columns (typical order):
-    // 0: Name, 1: License#, 2: License Type, 3: Board, 4: Status, 5: Expiry, 6: City/County
-    if (cells.length < 5) continue;
-
-    const name   = cells[0] || '';
-    const status = cells[4] || '';
-    const city   = cells[6] || '';
-
-    // Only include currently active licensees; skip header artifacts
-    if (!name || name.toLowerCase() === 'name') continue;
-    if (status.toLowerCase() !== 'current') continue;
-
-    candidates.push({
-      name,
-      title: 'Veterinarian (FL Licensed)',
-      location: city ? `${city}, Florida` : 'Florida',
-      experience: 'Unknown',
-      source: 'Florida DBPR (Public Record)',
-      email: '',
-      linkedinUrl: ''
-    });
+    if (cells.length) rows.push(cells);
   }
+  return rows;
+}
 
-  // Cap per run to avoid flooding CSV on first run
-  return candidates.slice(0, 20);
+/** Builds a candidate object from raw fields. */
+function makeCandidate(name, city, stateAbbr, stateName, sourceLabel) {
+  return {
+    name,
+    title: `Veterinarian (${stateAbbr} Licensed)`,
+    location: city ? `${city}, ${stateName}` : stateName,
+    experience: 'Unknown',
+    source: `${sourceLabel} (Public Record)`,
+    email: '',
+    linkedinUrl: ''
+  };
+}
+
+// ── Florida ───────────────────────────────────────────────────────────────────
+// Source: https://www.myfloridalicense.com/wl11.asp  Board 0500 = Veterinary Medicine
+async function scrapeFloridaDBPR() {
+  const { status, html, error } = await httpGet(
+    'www.myfloridalicense.com',
+    '/wl11.asp?mode=0&brd=0500&typ=&lic=&nm=&cty=&zip=&cntry=0&con=&adr=&i=1'
+  );
+  if (error) { console.log(`   FL: ${error}`); return []; }
+  console.log(`   FL DBPR: HTTP ${status}`);
+  // Cols: 0=Name 1=License# 2=Type 3=Board 4=Status 5=Expiry 6=City
+  return extractTableRows(html)
+    .filter(c => c.length >= 5 && c[4].toLowerCase() === 'current' && c[0] && c[0].toLowerCase() !== 'name')
+    .map(c => makeCandidate(c[0], c[6] || '', 'FL', 'Florida', 'Florida DBPR'))
+    .slice(0, 20);
+}
+
+// ── California ────────────────────────────────────────────────────────────────
+// Source: https://search.dca.ca.gov  BD=5700 = Veterinary Medical Board
+async function scrapeCaliforniaDCA() {
+  const { status, html, error } = await httpGet(
+    'search.dca.ca.gov',
+    '/?BD=5700&TP=&NUM=&NAME=&CITY=&ZIP=&CTZN=&ISUS='
+  );
+  if (error) { console.log(`   CA: ${error}`); return []; }
+  console.log(`   CA DCA: HTTP ${status}`);
+  // Cols: 0=Name 1=License# 2=LicType 3=Status 4=Expiry 5=City
+  return extractTableRows(html)
+    .filter(c => c.length >= 4 && /active|current/i.test(c[3]) && c[0] && !/^name$/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[5] || '', 'CA', 'California', 'California DCA'))
+    .slice(0, 20);
+}
+
+// ── Texas ─────────────────────────────────────────────────────────────────────
+// Source: https://www.txvmb.texas.gov  Texas Veterinary Medical Board
+async function scrapeTexasTVMB() {
+  const { status, html, error } = await httpGet(
+    'www.txvmb.texas.gov',
+    '/licensee-search/?search=1&first_name=&last_name=&license_number=&city=&license_status=Active'
+  );
+  if (error) { console.log(`   TX: ${error}`); return []; }
+  console.log(`   TX TVMB: HTTP ${status}`);
+  // Cols vary; look for Name + city pattern
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || c[2] || '', 'TX', 'Texas', 'Texas TVMB'))
+    .slice(0, 20);
+}
+
+// ── New York ──────────────────────────────────────────────────────────────────
+// Source: https://www.op.nysed.gov  Office of the Professions, profession 56 = Veterinarian
+async function scrapeNewYorkNYSED() {
+  const { status, html, error } = await httpGet(
+    'www.op.nysed.gov',
+    '/verification/?ptype=56&op_county=&search_last_name=&search_first_name=&btnSubmit=Search'
+  );
+  if (error) { console.log(`   NY: ${error}`); return []; }
+  console.log(`   NY NYSED: HTTP ${status}`);
+  // Cols: 0=Name 1=Profession 2=License# 3=Status 4=County
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && /licensed|active/i.test(c[3] || '') && c[0] && !/^name$/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[4] || '', 'NY', 'New York', 'NY NYSED'))
+    .slice(0, 20);
+}
+
+// ── Illinois ──────────────────────────────────────────────────────────────────
+// Source: https://www.idfpr.illinois.gov  IDFPR license lookup
+async function scrapeIllinoisIDFPR() {
+  const { status, html, error } = await httpGet(
+    'www.idfpr.illinois.gov',
+    '/LicenseLookup/LicenseLookup.asp?profession=039&action=search&license=&fname=&lname=&city=&county='
+  );
+  if (error) { console.log(`   IL: ${error}`); return []; }
+  console.log(`   IL IDFPR: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[4] || c[3] || '', 'IL', 'Illinois', 'Illinois IDFPR'))
+    .slice(0, 20);
+}
+
+// ── Ohio ──────────────────────────────────────────────────────────────────────
+// Source: https://elicense.ohio.gov  Ohio eLicense, profession = Veterinarian
+async function scrapeOhioELicense() {
+  const { status, html, error } = await httpGet(
+    'elicense.ohio.gov',
+    '/lookup/r/_/#2'
+  );
+  if (error) { console.log(`   OH: ${error}`); return []; }
+  console.log(`   OH eLicense: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'OH', 'Ohio', 'Ohio eLicense'))
+    .slice(0, 20);
+}
+
+// ── Massachusetts ─────────────────────────────────────────────────────────────
+// Source: https://checkahealthcareprovider.mass.gov  Board of Registration of Veterinarians
+async function scrapeMassachusetts() {
+  const { status, html, error } = await httpGet(
+    'checkahealthcareprovider.mass.gov',
+    '/ProfilePage.aspx?LicenseType=VET&TypeCode=VET&action=search'
+  );
+  if (error) { console.log(`   MA: ${error}`); return []; }
+  console.log(`   MA Health Provider: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'MA', 'Massachusetts', 'MA License Board'))
+    .slice(0, 20);
+}
+
+// ── Connecticut ───────────────────────────────────────────────────────────────
+// Source: https://www.elicense.ct.gov  CT eLicense portal
+async function scrapeConnecticut() {
+  const { status, html, error } = await httpGet(
+    'www.elicense.ct.gov',
+    '/Lookup/LicenseLookup.aspx?profession=VET&status=Active'
+  );
+  if (error) { console.log(`   CT: ${error}`); return []; }
+  console.log(`   CT eLicense: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'CT', 'Connecticut', 'CT eLicense'))
+    .slice(0, 20);
+}
+
+// ── Maryland ──────────────────────────────────────────────────────────────────
+// Source: https://www.mdbop.org  Maryland Board of Physicians handles combined lookup
+// Veterinary board is under MDA; direct search via MD imap portal
+async function scrapeMaryland() {
+  const { status, html, error } = await httpGet(
+    'www.maryland.gov',
+    '/Pages/service.aspx?ID=2588'
+  );
+  if (error) { console.log(`   MD: ${error}`); return []; }
+  console.log(`   MD: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'MD', 'Maryland', 'MD License Board'))
+    .slice(0, 20);
+}
+
+// ── Tennessee ─────────────────────────────────────────────────────────────────
+// Source: https://verify.tn.gov  Tennessee license verification portal
+async function scrapeTennessee() {
+  const { status, html, error } = await httpGet(
+    'verify.tn.gov',
+    '/LicenseDetail.aspx?board=VET&status=Active'
+  );
+  if (error) { console.log(`   TN: ${error}`); return []; }
+  console.log(`   TN verify: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'TN', 'Tennessee', 'TN License Board'))
+    .slice(0, 20);
+}
+
+// ── Arizona ───────────────────────────────────────────────────────────────────
+// Source: https://veterinaryboard.az.gov  AZ State Veterinary Medical Examining Board
+async function scrapeArizona() {
+  const { status, html, error } = await httpGet(
+    'veterinaryboard.az.gov',
+    '/licensee-search/?status=active'
+  );
+  if (error) { console.log(`   AZ: ${error}`); return []; }
+  console.log(`   AZ Vet Board: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'AZ', 'Arizona', 'AZ Vet Board'))
+    .slice(0, 20);
+}
+
+// ── Colorado ──────────────────────────────────────────────────────────────────
+// Source: https://apps.colorado.gov  DORA license lookup
+async function scrapeColorado() {
+  const { status, html, error } = await httpGet(
+    'apps.colorado.gov',
+    '/dora/licensing/Lookup/LicenseLookup.aspx?profession=VET&status=Active'
+  );
+  if (error) { console.log(`   CO: ${error}`); return []; }
+  console.log(`   CO DORA: HTTP ${status}`);
+  return extractTableRows(html)
+    .filter(c => c.length >= 3 && c[0] && !/^(name|licensee)/i.test(c[0]))
+    .map(c => makeCandidate(c[0], c[3] || '', 'CO', 'Colorado', 'CO DORA'))
+    .slice(0, 20);
+}
+
+// ── Orchestrator ──────────────────────────────────────────────────────────────
+/**
+ * Runs all state board scrapers in parallel. Each fails safely.
+ * Targets the 12 states with active Thrive requisitions.
+ */
+async function fetchStateLicenseBoardCandidates() {
+  const scrapers = [
+    { label: 'Florida',       fn: scrapeFloridaDBPR    },
+    { label: 'California',    fn: scrapeCaliforniaDCA  },
+    { label: 'Texas',         fn: scrapeTexasTVMB      },
+    { label: 'New York',      fn: scrapeNewYorkNYSED   },
+    { label: 'Illinois',      fn: scrapeIllinoisIDFPR  },
+    { label: 'Ohio',          fn: scrapeOhioELicense   },
+    { label: 'Massachusetts', fn: scrapeMassachusetts  },
+    { label: 'Connecticut',   fn: scrapeConnecticut    },
+    { label: 'Maryland',      fn: scrapeMaryland       },
+    { label: 'Tennessee',     fn: scrapeTennessee      },
+    { label: 'Arizona',       fn: scrapeArizona        },
+    { label: 'Colorado',      fn: scrapeColorado       },
+  ];
+
+  const results = await Promise.allSettled(scrapers.map(s => s.fn()));
+
+  const allCandidates = [];
+  results.forEach((result, i) => {
+    if (result.status === 'fulfilled' && result.value.length > 0) {
+      console.log(`   ✓ ${scrapers[i].label}: ${result.value.length} licensees`);
+      allCandidates.push(...result.value);
+    } else if (result.status === 'rejected') {
+      console.log(`   ✗ ${scrapers[i].label}: ${result.reason}`);
+    }
+    // 0-result states already logged inside their own scraper
+  });
+
+  return allCandidates;
 }
 
 // ─── Main CandidateSourcer class ─────────────────────────────────────────────
