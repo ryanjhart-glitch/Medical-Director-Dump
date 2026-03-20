@@ -167,6 +167,9 @@ async function fetchPDLCandidates() {
  */
 function httpGetJSON(hostname, path) {
   return new Promise((resolve) => {
+    let settled = false;
+    const done = (val) => { if (!settled) { settled = true; resolve(val); } };
+
     const req = https.request({
       hostname,
       path,
@@ -179,12 +182,13 @@ function httpGetJSON(hostname, path) {
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
-        try { resolve(JSON.parse(data)); }
-        catch (e) { resolve(null); }
+        try { done(JSON.parse(data)); }
+        catch (e) { done(null); }
       });
+      res.on('error', () => done(null));
     });
-    req.on('error', () => resolve(null));
-    req.setTimeout(20000, () => { req.destroy(); resolve(null); });
+    req.on('error', () => done(null));
+    req.setTimeout(20000, () => { req.destroy(); done(null); });
     req.end();
   });
 }
@@ -277,6 +281,9 @@ async function fetchNPIRegistryCandidates() {
  */
 function httpGet(hostname, path, extraHeaders = {}) {
   return new Promise((resolve) => {
+    let settled = false;
+    const done = (val) => { if (!settled) { settled = true; resolve(val); } };
+
     const req = https.request({
       hostname,
       path,
@@ -288,17 +295,19 @@ function httpGet(hostname, path, extraHeaders = {}) {
       }
     }, (res) => {
       if (res.statusCode === 301 || res.statusCode === 302) {
-        resolve({ status: res.statusCode, html: '', redirect: res.headers.location });
+        res.resume(); // consume body so socket is released
+        done({ status: res.statusCode, html: '', redirect: res.headers.location });
         return;
       }
       let html = '';
       res.on('data', chunk => html += chunk);
-      res.on('end', () => resolve({ status: res.statusCode, html }));
+      res.on('end', () => done({ status: res.statusCode, html }));
+      res.on('error', e => done({ status: 0, html: '', error: e.message }));
     });
-    req.on('error', e => resolve({ status: 0, html: '', error: e.message }));
+    req.on('error', e => done({ status: 0, html: '', error: e.message }));
     req.setTimeout(15000, () => {
       req.destroy();
-      resolve({ status: 0, html: '', error: 'timeout' });
+      done({ status: 0, html: '', error: 'timeout' });
     });
     req.end();
   });
