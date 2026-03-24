@@ -158,9 +158,31 @@ async function fetchPDLCandidates() {
 
 // ─── NPI Registry (CMS) ──────────────────────────────────────────────────────
 // The National Provider Identifier registry is a FREE public API from CMS.
-// No API key required. Covers every US-licensed veterinarian.
-// Taxonomy group 138F = Veterinarians (general, equine, large animal, etc.)
+// No API key required. Covers every US-licensed veterinarian (~100k records).
+// Taxonomy group 138F = all 9 veterinary specialties.
 // Docs: https://npiregistry.cms.hhs.gov/search
+
+// All 51 US state/territory codes, rotated 5 at a time (~11-day full cycle)
+const NPI_STATES = [
+  'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA',
+  'HI','ID','IL','IN','IA','KS','KY','LA','ME','MD',
+  'MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ',
+  'NM','NY','NC','ND','OH','OK','OR','PA','RI','SC',
+  'SD','TN','TX','UT','VT','VA','WA','WV','WI','WY','DC'
+];
+
+// All 9 veterinary taxonomy codes in the CMS 138F group
+const NPI_TAXONOMIES = [
+  { code: '138F00000X', title: 'Veterinarian' },
+  { code: '138F00001X', title: 'Companion Animal Veterinarian' },
+  { code: '138F00002X', title: 'Equine Veterinarian' },
+  { code: '138F00003X', title: 'Food Animal Veterinarian' },
+  { code: '138F00004X', title: 'Food & Companion Animal Veterinarian' },
+  { code: '138F00005X', title: 'Large Animal Veterinarian' },
+  { code: '138F00006X', title: 'Poultry Veterinarian' },
+  { code: '138F00007X', title: 'Small Animal Veterinarian' },
+  { code: '138F00008X', title: 'Zoological Medicine Veterinarian' },
+];
 
 /**
  * Generic HTTPS GET that parses and returns JSON. Returns null on any error.
@@ -195,77 +217,84 @@ function httpGetJSON(hostname, path) {
 
 /**
  * Fetches veterinarians from the free CMS NPI Registry API.
- * Uses NPI taxonomy codes (138F group) — more precise than text search.
- *   138F00000X = Veterinarian (general)
- *   138F00002X = Equine
- *   138F00001X = Large Animal
- *   138F00005X = Small Animal
- * Returns up to 800 real, verified US vet records per run — no key needed.
+ *
+ * Strategy: rotate through all 51 US states 5 at a time (11-day full cycle).
+ * For each state, query all 9 vet taxonomy codes with pagination — capturing
+ * every licensed vet in the NPI database over ~11 days.
+ *
+ * Data captured per vet: name, specialty, city/state, practice phone,
+ * experience estimate (years since NPI enumeration date).
  */
 async function fetchNPIRegistryCandidates() {
-  const searches = [
-    { code: '138F00000X', label: 'general',      titleFallback: null },
-    { code: '138F00005X', label: 'small animal',  titleFallback: 'Small Animal Veterinarian' },
-    { code: '138F00002X', label: 'equine',        titleFallback: 'Equine Veterinarian' },
-    { code: '138F00001X', label: 'large animal',  titleFallback: 'Large Animal Veterinarian' },
-  ];
+  const BATCH_SIZE = 5;
+  const NUM_BATCHES = Math.ceil(NPI_STATES.length / BATCH_SIZE);
+  const startOfYear = new Date(new Date().getFullYear(), 0, 1).getTime();
+  const dayOfYear = Math.floor((Date.now() - startOfYear) / 86400000);
+  const batchIndex = dayOfYear % NUM_BATCHES;
+  const todaysStates = NPI_STATES.slice(batchIndex * BATCH_SIZE, (batchIndex + 1) * BATCH_SIZE);
+  const currentYear = new Date().getFullYear();
+
+  console.log(`   Batch ${batchIndex + 1}/${NUM_BATCHES} — states: ${todaysStates.join(', ')}`);
 
   const all = [];
 
-  for (const { code, label, titleFallback } of searches) {
-    const json = await httpGetJSON(
-      'npiregistry.cms.hhs.gov',
-      `/api/?version=2.1&taxonomy_code=${code}&enumeration_type=NPI-1&limit=200&skip=0`
-    );
+  for (const state of todaysStates) {
+    let stateTotal = 0;
 
-    if (!json) {
-      console.log(`   NPI (${label}): request failed or timed out`);
-      continue;
-    }
-    if (!Array.isArray(json.results)) {
-      console.log(`   NPI (${label}): unexpected response — result_count=${json.result_count ?? 'N/A'}`);
-      continue;
-    }
+    for (const { code, title } of NPI_TAXONOMIES) {
+      let skip = 0;
+      const limit = 200;
 
-    for (const p of json.results) {
-      const basic   = p.basic || {};
-      // Prefer practice location address; fall back to mailing
-      const addr    = (p.addresses || []).find(a => a.address_purpose === 'LOCATION')
-                   || (p.addresses || [])[0]
-                   || {};
-      const tax     = (p.taxonomies || []).find(t => t.primary)
-                   || (p.taxonomies || [])[0]
-                   || {};
+      while (true) {
+        const json = await httpGetJSON(
+          'npiregistry.cms.hhs.gov',
+          `/api/?version=2.1&taxonomy_code=${code}&state=${state}&enumeration_type=NPI-1&limit=${limit}&skip=${skip}`
+        );
 
-      // Build full name — NPI stores first/last (individual) or org name
-      let name;
-      if (basic.organizational_name) {
-        name = basic.organizational_name;
-      } else {
-        name = [basic.first_name, basic.middle_name, basic.last_name]
-          .filter(Boolean).join(' ');
-        if (basic.credential) name += `, ${basic.credential}`;
+        if (!json || !Array.isArray(json.results) || json.results.length === 0) break;
+
+        for (const p of json.results) {
+          const basic = p.basic || {};
+          const addr  = (p.addresses || []).find(a => a.address_purpose === 'LOCATION')
+                     || (p.addresses || [])[0] || {};
+          const tax   = (p.taxonomies || []).find(t => t.primary)
+                     || (p.taxonomies || [])[0] || {};
+
+          const nameParts = [basic.first_name, basic.middle_name, basic.last_name].filter(Boolean);
+          let name = nameParts.join(' ');
+          if (basic.credential) name += `, ${basic.credential}`;
+          if (!name.trim()) continue;
+
+          let experience = 'Unknown';
+          if (basic.enumeration_date) {
+            const enumYear = parseInt(basic.enumeration_date.slice(0, 4), 10);
+            const years = currentYear - enumYear;
+            if (years > 0 && years < 60) experience = `~${years} yrs (NPI since ${enumYear})`;
+          }
+
+          all.push({
+            name:        name.trim(),
+            title:       tax.desc || title,
+            location:    addr.city ? `${addr.city}, ${addr.state || state}` : (addr.state || state),
+            experience,
+            source:      'NPI Registry (CMS)',
+            email:       '',
+            linkedinUrl: '',
+            phone:       addr.telephone_number || ''
+          });
+        }
+
+        stateTotal += json.results.length;
+        if (json.results.length < limit) break;  // last page
+        skip += limit;
+        if (skip >= 2000) break;  // safety cap per state/taxonomy combo
       }
-
-      if (!name || !name.trim()) continue;
-
-      all.push({
-        name:        name.trim(),
-        title:       titleFallback || tax.desc || 'Veterinarian',
-        location:    addr.city
-                       ? `${addr.city}, ${addr.state}`
-                       : (addr.state || 'Unknown'),
-        experience:  'Unknown',
-        source:      'NPI Registry (CMS)',
-        email:       '',
-        linkedinUrl: ''
-      });
     }
 
-    console.log(`   NPI (${label}): ${json.result_count ?? '?'} total in registry / ${json.results.length} fetched`);
+    console.log(`   ${state}: ${stateTotal} records`);
   }
 
-  console.log(`✅ NPI Registry: ${all.length} veterinarians pulled.`);
+  console.log(`✅ NPI Registry: ${all.length} veterinarians from ${todaysStates.length} states.`);
   return all;
 }
 
@@ -1541,8 +1570,8 @@ class CandidateSourcer {
       const lines = data.split('\n');
       if (lines.length > 1) {
         this.candidates = lines.slice(1).filter(line => line.trim()).map(line => {
-          const [name, title, location, experience, source, date, email, linkedinUrl] = line.split(',');
-          return { name, title, location, experience, source, date, email: email || '', linkedinUrl: linkedinUrl || '' };
+          const [name, title, location, experience, source, date, email, linkedinUrl, phone] = line.split(',');
+          return { name, title, location, experience, source, date, email: email || '', linkedinUrl: linkedinUrl || '', phone: phone || '' };
         });
       }
     }
@@ -1557,7 +1586,8 @@ class CandidateSourcer {
       source: candidate.source || 'Unknown',
       date: new Date().toISOString().split('T')[0],
       email: candidate.email || '',
-      linkedinUrl: candidate.linkedinUrl || ''
+      linkedinUrl: candidate.linkedinUrl || '',
+      phone: candidate.phone || ''
     };
 
     // ── Name sanity guard ───────────────────────────────────────────────────
@@ -1592,9 +1622,9 @@ class CandidateSourcer {
   }
 
   saveCandidates() {
-    const header = 'Name,Title,Location,Experience,Source,Date Added,Email,LinkedIn URL\n';
+    const header = 'Name,Title,Location,Experience,Source,Date Added,Email,LinkedIn URL,Phone\n';
     const rows = this.candidates.map(c =>
-      `${c.name},${c.title},${c.location},${c.experience},${c.source},${c.date},${c.email || ''},${c.linkedinUrl || ''}`
+      `${c.name},${c.title},${c.location},${c.experience},${c.source},${c.date},${c.email || ''},${c.linkedinUrl || ''},${c.phone || ''}`
     ).join('\n');
     fs.writeFileSync(this.candidatesFile, header + rows);
   }
@@ -1632,25 +1662,30 @@ class CandidateSourcer {
       allResults.push(...pdlCandidates);
     }
 
-    // ── Source 4: US State licensing boards — all 50 states (no key needed) ──
-    console.log('🏛️  Querying US state veterinary licensing boards (all 50 states)...');
-    const stateCandidates = await fetchStateLicenseBoardCandidates();
-    allResults.push(...stateCandidates);
+    // ── Sources 4–7: Board/association scrapers (disabled by default) ─────────
+    // These scrapers target state licensing boards, Canadian boards, state VMA
+    // directories, and specialty networks (AAEP, ReliefVets). They fail silently
+    // from GitHub Actions because government/association sites block cloud IPs.
+    // Enable with ENABLE_SCRAPERS=true (requires a residential proxy for results).
+    if (process.env.ENABLE_SCRAPERS === 'true') {
+      console.log('🏛️  Querying US state veterinary licensing boards (all 50 states)...');
+      const stateCandidates = await fetchStateLicenseBoardCandidates();
+      allResults.push(...stateCandidates);
 
-    // ── Source 5: Canadian provincial regulatory boards ───────────────────────
-    console.log('🍁  Querying Canadian provincial veterinary regulatory boards...');
-    const canadianCandidates = await fetchCanadianBoardCandidates();
-    allResults.push(...canadianCandidates);
+      console.log('🍁  Querying Canadian provincial veterinary regulatory boards...');
+      const canadianCandidates = await fetchCanadianBoardCandidates();
+      allResults.push(...canadianCandidates);
 
-    // ── Source 6: US state VMA "Find a Vet" member directories ───────────────
-    console.log('🐾  Querying state VMA association directories...');
-    const vmaCandidates = await fetchVMADirectoryCandidates();
-    allResults.push(...vmaCandidates);
+      console.log('🐾  Querying state VMA association directories...');
+      const vmaCandidates = await fetchVMADirectoryCandidates();
+      allResults.push(...vmaCandidates);
 
-    // ── Source 7: Equine (AAEP) + Relief/Locum specialty directories ─────────
-    console.log('🐴  Querying equine and relief/locum specialty directories...');
-    const specialtyCandidates = await fetchSpecialtyCandidates();
-    allResults.push(...specialtyCandidates);
+      console.log('🐴  Querying equine and relief/locum specialty directories...');
+      const specialtyCandidates = await fetchSpecialtyCandidates();
+      allResults.push(...specialtyCandidates);
+    } else {
+      console.log('⏭️  Board/association scrapers skipped (set ENABLE_SCRAPERS=true to enable; requires proxy)');
+    }
 
     // ── No data at all ────────────────────────────────────────────────────────
     if (allResults.length === 0) {
@@ -1716,6 +1751,7 @@ class CandidateSourcer {
       console.log(`   Location:   ${c.location}`);
       console.log(`   Experience: ${c.experience}`);
       console.log(`   Source:     ${c.source}`);
+      console.log(`   Phone:      ${c.phone || 'N/A'}`);
       console.log(`   Email:      ${c.email || 'N/A'}`);
       console.log(`   LinkedIn:   ${c.linkedinUrl || 'N/A'}`);
       console.log(`   Added:      ${c.date}`);
