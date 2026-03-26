@@ -81,25 +81,23 @@ async function fetchPDLCandidates() {
   const apiKey = (process.env.PDL_API_KEY || '').trim();
   if (!apiKey || apiKey === 'your-pdl-api-key-here') return null;
 
-  // PDL supports SQL-style queries against their person dataset
+  // PDL supports SQL-style queries against their person dataset.
+  // Use LIKE patterns so we catch all vet title variants without brittle exact strings.
+  // Deliberately exclude technician/assistant/nurse to focus on licensed DVMs.
   const sqlQuery = `SELECT * FROM person
-    WHERE job_title IN (
-      'veterinary medical director',
-      'dvm medical director',
-      'veterinary clinical director',
-      'veterinary chief of staff',
-      'chief of staff',
-      'equine veterinarian',
-      'equine medical director',
-      'large animal veterinarian',
-      'relief veterinarian',
-      'locum veterinarian',
-      'locum tenens veterinarian',
-      'per diem veterinarian',
-      'veterinary practice owner',
-      'associate veterinarian',
-      'staff veterinarian'
+    WHERE (
+      job_title LIKE '%veterinarian%'
+      OR job_title LIKE '%dvm%'
+      OR job_title LIKE '%veterinary medical director%'
+      OR job_title LIKE '%veterinary clinical director%'
+      OR job_title LIKE '%veterinary chief of staff%'
+      OR job_title LIKE '%equine practitioner%'
+      OR job_title LIKE '%relief vet%'
     )
+    AND job_title NOT LIKE '%technician%'
+    AND job_title NOT LIKE '%assistant%'
+    AND job_title NOT LIKE '%nurse%'
+    AND job_title NOT LIKE '%receptionist%'
     AND location_country IN ('united states', 'canada')`;
 
   const body = JSON.stringify({ sql: sqlQuery, size: 25, pretty: false });
