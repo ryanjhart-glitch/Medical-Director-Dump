@@ -100,8 +100,7 @@ async function fetchPDLCandidates() {
       'associate veterinarian',
       'staff veterinarian'
     )
-    AND location_country IN ('united states', 'canada')
-    LIMIT 25`;
+    AND location_country IN ('united states', 'canada')`;
 
   const body = JSON.stringify({ sql: sqlQuery, size: 25, pretty: false });
 
