@@ -81,31 +81,38 @@ async function fetchPDLCandidates() {
   const apiKey = (process.env.PDL_API_KEY || '').trim();
   if (!apiKey || apiKey === 'your-pdl-api-key-here') return null;
 
-  // PDL supports SQL-style queries against their person dataset.
-  // Use LIKE patterns so we catch all vet title variants without brittle exact strings.
-  // Deliberately exclude technician/assistant/nurse to focus on licensed DVMs.
-  const sqlQuery = `SELECT * FROM person
-    WHERE (
-      job_title LIKE '%veterinarian%'
-      OR job_title LIKE '%dvm%'
-      OR job_title LIKE '%veterinary medical director%'
-      OR job_title LIKE '%veterinary clinical director%'
-      OR job_title LIKE '%veterinary chief of staff%'
-      OR job_title LIKE '%equine practitioner%'
-      OR job_title LIKE '%relief vet%'
-    )
-    AND job_title NOT LIKE '%technician%'
+  // Rotate through 8 targeted queries so each day fetches a different candidate type.
+  // PDL deprecated the `from` pagination parameter — daily variety comes from query rotation.
+  const EXCLUDE = `AND job_title NOT LIKE '%technician%'
     AND job_title NOT LIKE '%assistant%'
     AND job_title NOT LIKE '%nurse%'
     AND job_title NOT LIKE '%receptionist%'
     AND location_country IN ('united states', 'canada')`;
 
-  // Cycle through 8 pages of 25 (offsets 0, 25, 50 … 175) so different records
-  // come back each day without asking for an offset beyond PDL's result count.
-  const dayOfYear = Math.floor((Date.now() - Date.UTC(new Date().getUTCFullYear(), 0, 0)) / 86400000);
-  const fromOffset = (dayOfYear % 8) * 25;
+  const QUERIES = [
+    // Day 0 — Veterinary Medical Directors
+    `SELECT * FROM person WHERE (job_title LIKE '%veterinary medical director%' OR job_title LIKE '%vet medical director%') ${EXCLUDE}`,
+    // Day 1 — Veterinary Chief of Staff
+    `SELECT * FROM person WHERE (job_title LIKE '%veterinary chief of staff%' OR job_title LIKE '%chief of staff%' AND job_title LIKE '%vet%') ${EXCLUDE}`,
+    // Day 2 — General licensed DVMs
+    `SELECT * FROM person WHERE job_title LIKE '%dvm%' ${EXCLUDE}`,
+    // Day 3 — Veterinarians (broad)
+    `SELECT * FROM person WHERE job_title LIKE '%veterinarian%' ${EXCLUDE}`,
+    // Day 4 — Equine specialists
+    `SELECT * FROM person WHERE (job_title LIKE '%equine%' OR job_title LIKE '%horse%' OR job_title LIKE '%large animal%') AND (job_title LIKE '%vet%' OR job_title LIKE '%dvm%') ${EXCLUDE}`,
+    // Day 5 — Relief / locum vets
+    `SELECT * FROM person WHERE (job_title LIKE '%relief vet%' OR job_title LIKE '%locum vet%' OR job_title LIKE '%relief dvm%' OR job_title LIKE '%per diem vet%') ${EXCLUDE}`,
+    // Day 6 — Veterinary Clinical Directors / Practice Owners
+    `SELECT * FROM person WHERE (job_title LIKE '%veterinary clinical director%' OR job_title LIKE '%veterinary practice owner%' OR job_title LIKE '%animal hospital director%') ${EXCLUDE}`,
+    // Day 7 — Veterinary Hospital / Practice Directors
+    `SELECT * FROM person WHERE (job_title LIKE '%veterinary hospital%' OR job_title LIKE '%animal medical center%' OR job_title LIKE '%veterinary director%') ${EXCLUDE}`,
+  ];
 
-  const body = JSON.stringify({ sql: sqlQuery, size: 25, from: fromOffset, pretty: false });
+  const dayOfYear = Math.floor((Date.now() - Date.UTC(new Date().getUTCFullYear(), 0, 0)) / 86400000);
+  const sqlQuery = QUERIES[dayOfYear % QUERIES.length];
+  console.log(`People Data Labs: using query variant ${dayOfYear % QUERIES.length} (day ${dayOfYear})`);
+
+  const body = JSON.stringify({ sql: sqlQuery, size: 25, pretty: false });
 
   return new Promise((resolve) => {
     const req = https.request({
