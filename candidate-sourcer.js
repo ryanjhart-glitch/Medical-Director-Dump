@@ -100,10 +100,10 @@ async function fetchPDLCandidates() {
     AND job_title NOT LIKE '%receptionist%'
     AND location_country IN ('united states', 'canada')`;
 
-  // Advance the result window each day so we don't see the same 25 records every run.
-  // PDL's max `from` is 9999; cycle through 400 pages of 25 (10 000 unique records).
+  // Cycle through 8 pages of 25 (offsets 0, 25, 50 … 175) so different records
+  // come back each day without asking for an offset beyond PDL's result count.
   const dayOfYear = Math.floor((Date.now() - Date.UTC(new Date().getUTCFullYear(), 0, 0)) / 86400000);
-  const fromOffset = (dayOfYear * 25) % 10000;
+  const fromOffset = (dayOfYear % 8) * 25;
 
   const body = JSON.stringify({ sql: sqlQuery, size: 25, from: fromOffset, pretty: false });
 
