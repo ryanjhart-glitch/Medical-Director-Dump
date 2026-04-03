@@ -100,7 +100,12 @@ async function fetchPDLCandidates() {
     AND job_title NOT LIKE '%receptionist%'
     AND location_country IN ('united states', 'canada')`;
 
-  const body = JSON.stringify({ sql: sqlQuery, size: 25, pretty: false });
+  // Advance the result window each day so we don't see the same 25 records every run.
+  // PDL's max `from` is 9999; cycle through 400 pages of 25 (10 000 unique records).
+  const dayOfYear = Math.floor((Date.now() - Date.UTC(new Date().getUTCFullYear(), 0, 0)) / 86400000);
+  const fromOffset = (dayOfYear * 25) % 10000;
+
+  const body = JSON.stringify({ sql: sqlQuery, size: 25, from: fromOffset, pretty: false });
 
   return new Promise((resolve) => {
     const req = https.request({
@@ -1567,7 +1572,24 @@ class CandidateSourcer {
       const lines = data.split('\n');
       if (lines.length > 1) {
         this.candidates = lines.slice(1).filter(line => line.trim()).map(line => {
-          const [name, title, location, experience, source, date, email, linkedinUrl, phone] = line.split(',');
+          // RFC 4180-compatible CSV parser — handles quoted fields with embedded commas.
+          const fields = [];
+          let cur = '';
+          let inQuote = false;
+          for (let i = 0; i < line.length; i++) {
+            const ch = line[i];
+            if (inQuote) {
+              if (ch === '"' && line[i + 1] === '"') { cur += '"'; i++; }
+              else if (ch === '"') { inQuote = false; }
+              else { cur += ch; }
+            } else {
+              if (ch === '"') { inQuote = true; }
+              else if (ch === ',') { fields.push(cur); cur = ''; }
+              else { cur += ch; }
+            }
+          }
+          fields.push(cur);
+          const [name, title, location, experience, source, date, email, linkedinUrl, phone] = fields;
           return { name, title, location, experience, source, date, email: email || '', linkedinUrl: linkedinUrl || '', phone: phone || '' };
         });
       }
@@ -1619,9 +1641,18 @@ class CandidateSourcer {
   }
 
   saveCandidates() {
+    // Quote any field that contains a comma, double-quote, or newline so the CSV
+    // round-trips correctly through loadCandidates(). Follows RFC 4180.
+    const q = v => {
+      const s = String(v == null ? '' : v);
+      return s.includes(',') || s.includes('"') || s.includes('\n')
+        ? '"' + s.replace(/"/g, '""') + '"'
+        : s;
+    };
     const header = 'Name,Title,Location,Experience,Source,Date Added,Email,LinkedIn URL,Phone\n';
     const rows = this.candidates.map(c =>
-      `${c.name},${c.title},${c.location},${c.experience},${c.source},${c.date},${c.email || ''},${c.linkedinUrl || ''},${c.phone || ''}`
+      [c.name, c.title, c.location, c.experience, c.source, c.date,
+       c.email || '', c.linkedinUrl || '', c.phone || ''].map(q).join(',')
     ).join('\n');
     fs.writeFileSync(this.candidatesFile, header + rows);
   }
