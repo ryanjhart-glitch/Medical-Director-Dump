@@ -1,8 +1,9 @@
 name: Daily Candidate Sourcer
 
 on:
-  schedule:
-    - cron: '0 12 * * *'  # Runs at 7 AM Eastern / 6 AM Central every day
+  # schedule:
+  #   - cron: '0 12 * * *'  # Runs at 7 AM Eastern / 6 AM Central every day
+  #   (Re-enable the two lines above to resume daily runs)
   workflow_dispatch:       # Lets you run it manually from GitHub with a button click
 
 permissions:
