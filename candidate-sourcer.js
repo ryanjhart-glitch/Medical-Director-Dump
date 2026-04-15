@@ -5,6 +5,29 @@ const https = require('https');
 const config = require('./config');
 const { sendDailyReport } = require('./mailer');
 
+// ─── Excluded candidates ──────────────────────────────────────────────────────
+// Names in this set are permanently skipped and will never be added to the CSV.
+// All comparisons are case-insensitive (names are lowercased before checking).
+const EXCLUDED_NAMES = new Set([
+  'kathleen bartos', 'joe richter', 'jason banaszak', 'rhea mccullough',
+  'kenneth head', 'keith gordon', 'gordon smok', 'gina smith', 'kaisa young',
+  'jasmine hanson', 'hope hunter', 'michael siggers', 'colleen fisher',
+  'celia friedman cowan', 'rosemary riley', 'nicole mcdonagh', 'ken thompson',
+  'bobbie mammato', 'billy dundon', 'david bradley', 'patricia van de coevering',
+  'cassie brownell', 'nermin massoud', 'crystal bley', 'jason leszkowicz',
+  'kathleen marcus', 'catherine foret', 'julie oghigian', 'jennifer weddig morley',
+  'diego sobrino', 'alayson phelps', 'brooke certa', 'vanesa farmer',
+  'killian lenahen', 'nellie wilbers', 'jason heitzman', 'suzanne michel',
+  'liz mccalley', 'jenese williams', 'stephanie krick', 'maddie buddendorf',
+  'erik yeager', 'beth solomon', 'steve drum', 'myles rowley', 'helen smith',
+  'benjamin fox', 'ellie wahlberg', 'diane krumanaker', 'brittany palmer',
+  'lenette telles', 'abbey schmidt', 'chelsea anderson', 'alexandra john',
+  'justin simone', 'herbert portillo', 'derrick reed', 'shequenta wray',
+  'ava mastrostefano', 'cynthia sorrick', 'bethany meno', 'miranda ciotti-mcclallen',
+  'tracy stevens', 'tais perpetuo', 'melinda knox', 'jennifer weaver',
+  'tracy reis', 'elizabeth welch',
+]);
+
 /**
  * Fetches candidates from Apollo.io People Search API.
  * Requires a paid Apollo plan. Returns null if not configured, [] on API failure.
@@ -1615,6 +1638,11 @@ class CandidateSourcer {
       linkedinUrl: candidate.linkedinUrl || '',
       phone: candidate.phone || ''
     };
+
+    // ── Excluded names ──────────────────────────────────────────────────────
+    if (EXCLUDED_NAMES.has(newCandidate.name.toLowerCase().trim())) {
+      return false;
+    }
 
     // ── Name sanity guard ───────────────────────────────────────────────────
     // Reject HTML form artifacts that some board scrapers pick up as rows:
