@@ -114,90 +114,196 @@ async function fetchPDLCandidates() {
     AND job_title NOT LIKE '%receptionist%'
     AND location_country IN ('united states', 'canada')`;
 
-  // Date range helpers for experience filtering via job_start_date
+  // Date range helper — 5-6 YOE window (started between 2018 and 2021)
   const currentYear = new Date().getUTCFullYear();
-  const expCutoffYear = currentYear - 4;   // 4+ years in role
-  const yoe3min = currentYear - 8;         // Associate DVM 3-8 YOE window: started 3-8 yrs ago
-  const yoe3max = currentYear - 3;
+  const yoeMin56 = currentYear - 8;   // ~5-6 years back
+  const yoeMax56 = currentYear - 5;
 
+  // 18 targeted Boolean searches translated to PDL SQL.
+  // job_title  = current role title
+  // job_summary = LinkedIn About section text (intent/skills signals)
+  // job_company_name = current employer
+  // currently_working = false → between jobs (PDL's closest proxy for "open to work")
   const QUERIES = [
-    // Day 0 — Veterinary Medical Directors (GP + general)
-    `SELECT * FROM person WHERE (job_title LIKE '%veterinary medical director%' OR job_title LIKE '%vet medical director%' OR job_title LIKE '%general practice medical director%') ${EXCLUDE}`,
-    // Day 1 — Veterinary Chief of Staff
-    `SELECT * FROM person WHERE (job_title LIKE '%veterinary chief of staff%' OR (job_title LIKE '%chief of staff%' AND job_title LIKE '%vet%')) ${EXCLUDE}`,
-    // Day 2 — Relief veterinarians
-    `SELECT * FROM person WHERE (job_title LIKE '%relief veterinarian%' OR job_title LIKE '%relief dvm%' OR job_title LIKE '%relief vet%' OR job_title LIKE '%per diem veterinarian%' OR job_title LIKE '%per diem dvm%') ${EXCLUDE}`,
-    // Day 3 — Locum veterinarians
-    `SELECT * FROM person WHERE (job_title LIKE '%locum veterinarian%' OR job_title LIKE '%locum dvm%' OR job_title LIKE '%locum vet%' OR job_title LIKE '%locum tenens veterinarian%') ${EXCLUDE}`,
-    // Day 4 — Urgent care / emergency Medical Directors
-    `SELECT * FROM person WHERE (job_title LIKE '%urgent care%' OR job_title LIKE '%emergency%') AND (job_title LIKE '%medical director%' OR job_title LIKE '%vet%' OR job_title LIKE '%dvm%') ${EXCLUDE}`,
-    // Day 5 — Equine specialists
-    `SELECT * FROM person WHERE (job_title LIKE '%equine%' OR job_title LIKE '%large animal%' OR job_title LIKE '%equine practitioner%') AND (job_title LIKE '%vet%' OR job_title LIKE '%dvm%') ${EXCLUDE}`,
-    // Day 6 — DVMs with 4+ years in current role
-    `SELECT * FROM person WHERE job_title LIKE '%dvm%' AND job_start_date <= '${expCutoffYear}-12-31' ${EXCLUDE}`,
-    // Day 7 — Veterinarians with 4+ years in current role
-    `SELECT * FROM person WHERE job_title LIKE '%veterinarian%' AND job_start_date <= '${expCutoffYear}-12-31' ${EXCLUDE}`,
-    // Day 8 — Veterinary Clinical Directors / Practice Owners
-    `SELECT * FROM person WHERE (job_title LIKE '%veterinary clinical director%' OR job_title LIKE '%veterinary practice owner%' OR job_title LIKE '%animal hospital director%') ${EXCLUDE}`,
-    // Day 9 — Veterinary Hospital / Practice Directors
-    `SELECT * FROM person WHERE (job_title LIKE '%veterinary hospital director%' OR job_title LIKE '%animal medical center%' OR job_title LIKE '%veterinary director%') ${EXCLUDE}`,
-    // Day 10 — Lead / Senior / Managing / Head Veterinarians
-    `SELECT * FROM person WHERE (job_title LIKE '%lead veterinarian%' OR job_title LIKE '%senior veterinarian%' OR job_title LIKE '%managing veterinarian%' OR job_title LIKE '%head veterinarian%') ${EXCLUDE}`,
-    // Day 11 — General licensed DVMs (broad)
-    `SELECT * FROM person WHERE job_title LIKE '%dvm%' ${EXCLUDE}`,
-    // Day 12 — Veterinarians (broad)
-    `SELECT * FROM person WHERE job_title LIKE '%veterinarian%' ${EXCLUDE}`,
-    // Day 13 — Associate DVMs: 3-8 YOE window
-    `SELECT * FROM person WHERE (job_title LIKE '%associate veterinarian%' OR job_title LIKE '%associate dvm%') AND job_start_date >= '${yoe3min}-01-01' AND job_start_date <= '${yoe3max}-12-31' ${EXCLUDE}`,
-    // Day 14 — GP veterinarians: 4-12 YOE sweet spot
-    `SELECT * FROM person WHERE (job_title LIKE '%general practice veterinarian%' OR job_title LIKE '%general practitioner%' OR job_title LIKE '%gp veterinarian%' OR job_title LIKE '%small animal veterinarian%') AND job_start_date >= '${currentYear - 12}-01-01' AND job_start_date <= '${currentYear - 4}-12-31' ${EXCLUDE}`,
-    // Day 15 — High surgery volume DVMs
-    // PDL doesn't index surgery volume; title keywords are the best available signal.
-    `SELECT * FROM person WHERE (job_title LIKE '%surgical veterinarian%' OR job_title LIKE '%veterinary surgeon%' OR job_title LIKE '%soft tissue surgeon%' OR job_title LIKE '%surgery dvm%' OR job_title LIKE '%surgical dvm%') ${EXCLUDE}`,
-    // Day 16 — Dentistry-focused veterinarians
-    `SELECT * FROM person WHERE (job_title LIKE '%veterinary dentist%' OR job_title LIKE '%veterinary dental%' OR job_title LIKE '%dental veterinarian%' OR job_title LIKE '%veterinary oral%') ${EXCLUDE}`,
-    // Day 17 — Fear Free certified veterinarians
-    `SELECT * FROM person WHERE (job_title LIKE '%fear free%' AND (job_title LIKE '%vet%' OR job_title LIKE '%dvm%')) ${EXCLUDE}`,
-    // Day 18 — Urgent care capable GPs
-    `SELECT * FROM person WHERE (job_title LIKE '%urgent care veterinarian%' OR job_title LIKE '%urgent care dvm%' OR (job_title LIKE '%urgent care%' AND job_title LIKE '%veterinarian%')) ${EXCLUDE}`,
-    // Day 19 — Emergency / ER veterinarians
-    `SELECT * FROM person WHERE (job_title LIKE '%emergency veterinarian%' OR job_title LIKE '%emergency dvm%' OR job_title LIKE '%er veterinarian%' OR job_title LIKE '%critical care veterinarian%' OR job_title LIKE '%criticalist%') ${EXCLUDE}`,
-    // Day 20 — Internal medicine focused GPs
-    `SELECT * FROM person WHERE (job_title LIKE '%internal medicine veterinarian%' OR job_title LIKE '%veterinary internist%' OR (job_title LIKE '%internal medicine%' AND (job_title LIKE '%vet%' OR job_title LIKE '%dvm%'))) ${EXCLUDE}`,
-    // Day 21 — Surgery-heavy GPs
-    `SELECT * FROM person WHERE (job_title LIKE '%surgery veterinarian%' OR job_title LIKE '%veterinary surgery%' OR (job_title LIKE '%surgery%' AND (job_title LIKE '%veterinarian%' OR job_title LIKE '%dvm%'))) ${EXCLUDE}`,
-    // Day 22 — Exotic / avian veterinarians
-    `SELECT * FROM person WHERE (job_title LIKE '%exotic%' OR job_title LIKE '%avian%' OR job_title LIKE '%zoo%' OR job_title LIKE '%wildlife%') AND (job_title LIKE '%vet%' OR job_title LIKE '%dvm%') ${EXCLUDE}`,
-    // Day 23 — Mobile veterinarians
-    `SELECT * FROM person WHERE (job_title LIKE '%mobile veterinarian%' OR job_title LIKE '%mobile dvm%' OR job_title LIKE '%house call veterinarian%' OR job_title LIKE '%mobile vet%') ${EXCLUDE}`,
-    // Days 24-28 — "Open to work" overlay: PDL has no open_to_work flag (LinkedIn-only).
-    // currently_working = false is the closest equivalent — people between jobs who are
-    // actively available. Applied across the five highest-priority profile types.
-    // Day 24 — DVMs currently between jobs
-    `SELECT * FROM person WHERE job_title LIKE '%dvm%' AND currently_working = false ${EXCLUDE}`,
-    // Day 25 — Veterinarians currently between jobs
-    `SELECT * FROM person WHERE job_title LIKE '%veterinarian%' AND currently_working = false ${EXCLUDE}`,
-    // Day 26 — Medical Directors / Chief of Staff currently between jobs
-    `SELECT * FROM person WHERE (job_title LIKE '%medical director%' OR job_title LIKE '%chief of staff%') AND (job_title LIKE '%vet%' OR job_title LIKE '%dvm%' OR job_title LIKE '%animal%') AND currently_working = false ${EXCLUDE}`,
-    // Day 27 — Relief / locum vets currently between jobs
-    `SELECT * FROM person WHERE (job_title LIKE '%relief%' OR job_title LIKE '%locum%') AND (job_title LIKE '%vet%' OR job_title LIKE '%dvm%') AND currently_working = false ${EXCLUDE}`,
-    // Day 28 — Associate / lead / senior vets currently between jobs
-    `SELECT * FROM person WHERE (job_title LIKE '%associate veterinarian%' OR job_title LIKE '%lead veterinarian%' OR job_title LIKE '%senior veterinarian%') AND currently_working = false ${EXCLUDE}`,
-    // Days 29-34 — High-impact compound searches
-    // PDL indexes job titles and summary text; these target intent/role signals beyond title alone.
-    // Day 29 — Mentor + veterinarian (leadership-ready producers)
-    `SELECT * FROM person WHERE (job_title LIKE '%mentor%' OR job_summary LIKE '%mentor%') AND (job_title LIKE '%veterinarian%' OR job_title LIKE '%dvm%') ${EXCLUDE}`,
-    // Day 30 — Lead + veterinarian (team anchor candidates)
-    `SELECT * FROM person WHERE (job_title LIKE '%lead%' AND (job_title LIKE '%veterinarian%' OR job_title LIKE '%dvm%')) ${EXCLUDE}`,
-    // Day 31 — Surgery-heavy veterinarians (title signals)
-    `SELECT * FROM person WHERE (job_title LIKE '%surgery%' OR job_title LIKE '%surgical%' OR job_summary LIKE '%surgery%') AND (job_title LIKE '%veterinarian%' OR job_title LIKE '%dvm%') ${EXCLUDE}`,
-    // Day 32 — Trained interns / residents (vets with teaching/training roles)
-    `SELECT * FROM person WHERE (job_title LIKE '%intern%' OR job_title LIKE '%residency%' OR job_summary LIKE '%trained interns%' OR job_summary LIKE '%supervised residents%') AND (job_title LIKE '%vet%' OR job_title LIKE '%dvm%') ${EXCLUDE}`,
-    // Day 33 — Work-life balance / burnout signal (open to change)
-    // job_summary is a PDL field that surfaces LinkedIn About section text.
-    `SELECT * FROM person WHERE (job_summary LIKE '%work-life balance%' OR job_summary LIKE '%burnout%' OR job_summary LIKE '%new opportunity%' OR job_summary LIKE '%open to opportunities%') AND (job_title LIKE '%veterinarian%' OR job_title LIKE '%dvm%') ${EXCLUDE}`,
-    // Day 34 — High-volume producers (patient volume signals in summary)
-    `SELECT * FROM person WHERE (job_summary LIKE '%patients per day%' OR job_summary LIKE '%high volume%' OR job_summary LIKE '%busy practice%') AND (job_title LIKE '%veterinarian%' OR job_title LIKE '%dvm%') ${EXCLUDE}`,
+    // 1 — Leadership titles: Medical/Clinical Director, CoS, Lead/Managing/Head Vet
+    //     + DVM/VMD/Veterinarian + small animal/companion/GP
+    `SELECT * FROM person
+      WHERE (job_title LIKE '%medical director%' OR job_title LIKE '%clinical director%'
+             OR job_title LIKE '%chief of staff%' OR job_title LIKE '%lead veterinarian%'
+             OR job_title LIKE '%managing veterinarian%' OR job_title LIKE '%head veterinarian%')
+        AND (job_title LIKE '%dvm%' OR job_title LIKE '%vmd%' OR job_title LIKE '%veterinarian%')
+        AND (job_title LIKE '%small animal%' OR job_summary LIKE '%small animal%'
+             OR job_summary LIKE '%companion%' OR job_summary LIKE '%general practice%')
+      ${EXCLUDE}`,
+
+    // 2 — MD/CoS/CD + DVM + production/P&L/leadership/mentor signals + GP
+    `SELECT * FROM person
+      WHERE (job_title LIKE '%medical director%' OR job_title LIKE '%chief of staff%'
+             OR job_title LIKE '%clinical director%')
+        AND (job_title LIKE '%dvm%' OR job_title LIKE '%vmd%' OR job_title LIKE '%veterinarian%')
+        AND (job_summary LIKE '%production%' OR job_summary LIKE '%revenue%'
+             OR job_summary LIKE '%p&l%' OR job_summary LIKE '%leadership%'
+             OR job_summary LIKE '%mentor%')
+        AND (job_title LIKE '%general practice%' OR job_summary LIKE '%general practice%'
+             OR job_summary LIKE '%small animal%')
+      ${EXCLUDE}`,
+
+    // 3 — Associate/Vet/DVM + mentor/lead/training intent + small animal/GP
+    //     NOT medical director (producers growing toward leadership)
+    `SELECT * FROM person
+      WHERE (job_title LIKE '%associate veterinarian%' OR job_title LIKE '%veterinarian%'
+             OR job_title LIKE '%dvm%' OR job_title LIKE '%vmd%')
+        AND (job_summary LIKE '%mentor%' OR job_summary LIKE '%lead doctor%'
+             OR job_title LIKE '%senior veterinarian%' OR job_summary LIKE '%training%'
+             OR job_summary LIKE '%team lead%')
+        AND (job_summary LIKE '%small animal%' OR job_summary LIKE '%general practice%'
+             OR job_summary LIKE '%companion%')
+        AND job_title NOT LIKE '%medical director%'
+      ${EXCLUDE}`,
+
+    // 4 — Associate DVM + small animal/GP + 5-6 YOE via job_start_date
+    //     NOT medical director or student
+    `SELECT * FROM person
+      WHERE (job_title LIKE '%associate veterinarian%' OR job_title LIKE '%dvm%'
+             OR job_title LIKE '%vmd%')
+        AND (job_title LIKE '%small animal%' OR job_summary LIKE '%small animal%'
+             OR job_summary LIKE '%general practice%')
+        AND job_start_date >= '${yoeMin56}-01-01'
+        AND job_start_date <= '${yoeMax56}-12-31'
+        AND job_title NOT LIKE '%medical director%'
+      ${EXCLUDE}`,
+
+    // 5 — Associate/Vet + small animal/GP + mentor/leadership/case management
+    //     NOT medical director or chief of staff
+    `SELECT * FROM person
+      WHERE (job_title LIKE '%associate veterinarian%' OR job_title LIKE '%veterinarian%')
+        AND (job_title LIKE '%small animal%' OR job_summary LIKE '%small animal%'
+             OR job_summary LIKE '%general practice%')
+        AND (job_summary LIKE '%mentor%' OR job_summary LIKE '%leadership%'
+             OR job_summary LIKE '%training%' OR job_summary LIKE '%case management%')
+        AND job_title NOT LIKE '%medical director%'
+        AND job_title NOT LIKE '%chief of staff%'
+      ${EXCLUDE}`,
+
+    // 6 — Surgery / dentistry capable vets (small animal/GP)
+    //     soft tissue surgery, dentistry, dental radiographs, extractions
+    `SELECT * FROM person
+      WHERE (job_title LIKE '%veterinarian%' OR job_title LIKE '%dvm%' OR job_title LIKE '%vmd%')
+        AND (job_summary LIKE '%soft tissue surgery%' OR job_summary LIKE '%dentistry%'
+             OR job_summary LIKE '%dental radiograph%' OR job_summary LIKE '%extraction%'
+             OR job_summary LIKE '%surgery%' OR job_title LIKE '%surgeon%')
+        AND (job_title LIKE '%small animal%' OR job_summary LIKE '%small animal%'
+             OR job_summary LIKE '%general practice%')
+      ${EXCLUDE}`,
+
+    // 7 — High-volume / busy practice / walk-in capable GPs
+    `SELECT * FROM person
+      WHERE (job_title LIKE '%veterinarian%' OR job_title LIKE '%dvm%' OR job_title LIKE '%vmd%')
+        AND (job_summary LIKE '%high volume%' OR job_summary LIKE '%busy practice%'
+             OR job_summary LIKE '%walk-in%' OR job_summary LIKE '%same day%'
+             OR job_summary LIKE '%patients per day%')
+        AND (job_title LIKE '%small animal%' OR job_summary LIKE '%small animal%'
+             OR job_summary LIKE '%general practice%')
+      ${EXCLUDE}`,
+
+    // 8 — Emergency / ER / UC vets with leadership or mentor potential
+    `SELECT * FROM person
+      WHERE (job_title LIKE '%emergency veterinarian%' OR job_title LIKE '%er veterinarian%'
+             OR job_title LIKE '%urgent care%')
+        AND (job_title LIKE '%dvm%' OR job_title LIKE '%vmd%' OR job_title LIKE '%veterinarian%')
+        AND (job_summary LIKE '%lead%' OR job_summary LIKE '%leadership%'
+             OR job_summary LIKE '%mentor%' OR job_title LIKE '%medical director%')
+      ${EXCLUDE}`,
+
+    // 9 — Vets with urgent care / walk-in / ER capability (small animal/GP)
+    `SELECT * FROM person
+      WHERE (job_title LIKE '%veterinarian%' OR job_title LIKE '%dvm%' OR job_title LIKE '%vmd%')
+        AND (job_title LIKE '%urgent care%' OR job_summary LIKE '%urgent care%'
+             OR job_summary LIKE '%walk-in%' OR job_title LIKE '%emergency%'
+             OR job_summary LIKE '%emergency%')
+        AND (job_title LIKE '%small animal%' OR job_summary LIKE '%small animal%'
+             OR job_summary LIKE '%general practice%')
+      ${EXCLUDE}`,
+
+    // 10 — Relief / locum / locum tenens veterinarians
+    `SELECT * FROM person
+      WHERE (job_title LIKE '%relief veterinarian%' OR job_title LIKE '%locum%'
+             OR job_title LIKE '%locum tenens%' OR job_title LIKE '%relief dvm%')
+        AND (job_title LIKE '%dvm%' OR job_title LIKE '%vmd%' OR job_title LIKE '%veterinarian%')
+      ${EXCLUDE}`,
+
+    // 11 — Vets working across multiple hospitals / on contract
+    `SELECT * FROM person
+      WHERE (job_title LIKE '%veterinarian%' OR job_title LIKE '%dvm%')
+        AND (job_title LIKE '%relief%' OR job_title LIKE '%locum%'
+             OR job_summary LIKE '%multiple hospitals%' OR job_title LIKE '%contract%'
+             OR job_summary LIKE '%contract veterinarian%')
+      ${EXCLUDE}`,
+
+    // 12 — Corporate chain vets (VCA, Banfield, BluePearl, Bond Vet, Ethos, NVA, VetCor)
+    //     small animal / GP focus, NOT students or assistants
+    `SELECT * FROM person
+      WHERE (job_title LIKE '%veterinarian%' OR job_title LIKE '%dvm%' OR job_title LIKE '%vmd%')
+        AND (job_title LIKE '%small animal%' OR job_summary LIKE '%small animal%'
+             OR job_summary LIKE '%general practice%')
+        AND (job_company_name LIKE '%vca%' OR job_company_name LIKE '%banfield%'
+             OR job_company_name LIKE '%bluepearl%' OR job_company_name LIKE '%bond vet%'
+             OR job_company_name LIKE '%ethos%' OR job_company_name LIKE '%nva%'
+             OR job_company_name LIKE '%vetcor%')
+      ${EXCLUDE}`,
+
+    // 13 — Former corporate chain vets (summary mentions formerly/previously/ex-)
+    `SELECT * FROM person
+      WHERE (job_title LIKE '%veterinarian%' OR job_title LIKE '%dvm%')
+        AND (job_summary LIKE '%formerly%' OR job_summary LIKE '%previously%'
+             OR job_summary LIKE '%ex-%' OR job_summary LIKE '%past%')
+        AND (job_summary LIKE '%vca%' OR job_summary LIKE '%banfield%'
+             OR job_summary LIKE '%nva%' OR job_summary LIKE '%vetcor%'
+             OR job_summary LIKE '%ethos%')
+      ${EXCLUDE}`,
+
+    // 14 — Vets interested in ownership / equity / buy-in (NOT already owners)
+    `SELECT * FROM person
+      WHERE (job_title LIKE '%veterinarian%' OR job_title LIKE '%dvm%')
+        AND (job_summary LIKE '%ownership%' OR job_summary LIKE '%equity%'
+             OR job_summary LIKE '%buy-in%' OR job_summary LIKE '%partner%')
+        AND job_title NOT LIKE '%practice owner%'
+        AND job_title NOT LIKE '% owner%'
+      ${EXCLUDE}`,
+
+    // 15 — Exotic / avian / reptile / pocket pet vets
+    `SELECT * FROM person
+      WHERE (job_title LIKE '%veterinarian%' OR job_title LIKE '%dvm%')
+        AND (job_title LIKE '%exotic%' OR job_title LIKE '%avian%' OR job_title LIKE '%reptile%'
+             OR job_summary LIKE '%exotic%' OR job_summary LIKE '%avian%'
+             OR job_summary LIKE '%reptile%' OR job_summary LIKE '%pocket pet%')
+      ${EXCLUDE}`,
+
+    // 16 — Vets signaling burnout / seeking work-life balance / open to change
+    `SELECT * FROM person
+      WHERE (job_title LIKE '%veterinarian%' OR job_title LIKE '%dvm%')
+        AND (job_summary LIKE '%work life balance%' OR job_summary LIKE '%work-life balance%'
+             OR job_summary LIKE '%burnout%' OR job_summary LIKE '%overwhelmed%'
+             OR job_summary LIKE '%looking for change%' OR job_summary LIKE '%new opportunity%'
+             OR job_summary LIKE '%open to opportunities%')
+      ${EXCLUDE}`,
+
+    // 17 — Small animal / GP vets (broad reach)
+    `SELECT * FROM person
+      WHERE (job_title LIKE '%veterinarian%' OR job_title LIKE '%dvm%')
+        AND (job_title LIKE '%small animal%' OR job_summary LIKE '%small animal%'
+             OR job_summary LIKE '%general practice%')
+      ${EXCLUDE}`,
+
+    // 18 — Companion animal vets across all key title types (catch-all quality pass)
+    `SELECT * FROM person
+      WHERE (job_title LIKE '%veterinarian%' OR job_title LIKE '%dvm%' OR job_title LIKE '%vmd%')
+        AND (job_title LIKE '%small animal%' OR job_summary LIKE '%small animal%'
+             OR job_summary LIKE '%companion%' OR job_summary LIKE '%general practice%')
+        AND (job_title LIKE '%medical director%' OR job_title LIKE '%chief of staff%'
+             OR job_title LIKE '%associate veterinarian%' OR job_title LIKE '%lead veterinarian%'
+             OR job_title LIKE '%relief veterinarian%')
+      ${EXCLUDE}`,
   ];
 
   const dayOfYear = Math.floor((Date.now() - Date.UTC(new Date().getUTCFullYear(), 0, 0)) / 86400000);
