@@ -147,10 +147,29 @@ async function fetchPDLCandidates() {
     `SELECT * FROM person WHERE job_title LIKE '%dvm%' ${EXCLUDE}`,
     // Day 12 — Veterinarians (broad)
     `SELECT * FROM person WHERE job_title LIKE '%veterinarian%' ${EXCLUDE}`,
-    // Day 13 — Associate DVMs: 3-8 YOE, titles suggesting mentoring or surgical role
-    // PDL doesn't index mentoring/surgery skills directly, so we target title keywords
-    // that co-occur with those responsibilities (mentor, surgery, associate + date range).
+    // Day 13 — Associate DVMs: 3-8 YOE window
     `SELECT * FROM person WHERE (job_title LIKE '%associate veterinarian%' OR job_title LIKE '%associate dvm%') AND job_start_date >= '${yoe3min}-01-01' AND job_start_date <= '${yoe3max}-12-31' ${EXCLUDE}`,
+    // Day 14 — GP veterinarians: 4-12 YOE sweet spot
+    `SELECT * FROM person WHERE (job_title LIKE '%general practice veterinarian%' OR job_title LIKE '%general practitioner%' OR job_title LIKE '%gp veterinarian%' OR job_title LIKE '%small animal veterinarian%') AND job_start_date >= '${currentYear - 12}-01-01' AND job_start_date <= '${currentYear - 4}-12-31' ${EXCLUDE}`,
+    // Day 15 — High surgery volume DVMs
+    // PDL doesn't index surgery volume; title keywords are the best available signal.
+    `SELECT * FROM person WHERE (job_title LIKE '%surgical veterinarian%' OR job_title LIKE '%veterinary surgeon%' OR job_title LIKE '%soft tissue surgeon%' OR job_title LIKE '%surgery dvm%' OR job_title LIKE '%surgical dvm%') ${EXCLUDE}`,
+    // Day 16 — Dentistry-focused veterinarians
+    `SELECT * FROM person WHERE (job_title LIKE '%veterinary dentist%' OR job_title LIKE '%veterinary dental%' OR job_title LIKE '%dental veterinarian%' OR job_title LIKE '%veterinary oral%') ${EXCLUDE}`,
+    // Day 17 — Fear Free certified veterinarians
+    `SELECT * FROM person WHERE (job_title LIKE '%fear free%' AND (job_title LIKE '%vet%' OR job_title LIKE '%dvm%')) ${EXCLUDE}`,
+    // Day 18 — Urgent care capable GPs
+    `SELECT * FROM person WHERE (job_title LIKE '%urgent care veterinarian%' OR job_title LIKE '%urgent care dvm%' OR (job_title LIKE '%urgent care%' AND job_title LIKE '%veterinarian%')) ${EXCLUDE}`,
+    // Day 19 — Emergency / ER veterinarians
+    `SELECT * FROM person WHERE (job_title LIKE '%emergency veterinarian%' OR job_title LIKE '%emergency dvm%' OR job_title LIKE '%er veterinarian%' OR job_title LIKE '%critical care veterinarian%' OR job_title LIKE '%criticalist%') ${EXCLUDE}`,
+    // Day 20 — Internal medicine focused GPs
+    `SELECT * FROM person WHERE (job_title LIKE '%internal medicine veterinarian%' OR job_title LIKE '%veterinary internist%' OR (job_title LIKE '%internal medicine%' AND (job_title LIKE '%vet%' OR job_title LIKE '%dvm%'))) ${EXCLUDE}`,
+    // Day 21 — Surgery-heavy GPs
+    `SELECT * FROM person WHERE (job_title LIKE '%surgery veterinarian%' OR job_title LIKE '%veterinary surgery%' OR (job_title LIKE '%surgery%' AND (job_title LIKE '%veterinarian%' OR job_title LIKE '%dvm%'))) ${EXCLUDE}`,
+    // Day 22 — Exotic / avian veterinarians
+    `SELECT * FROM person WHERE (job_title LIKE '%exotic%' OR job_title LIKE '%avian%' OR job_title LIKE '%zoo%' OR job_title LIKE '%wildlife%') AND (job_title LIKE '%vet%' OR job_title LIKE '%dvm%') ${EXCLUDE}`,
+    // Day 23 — Mobile veterinarians
+    `SELECT * FROM person WHERE (job_title LIKE '%mobile veterinarian%' OR job_title LIKE '%mobile dvm%' OR job_title LIKE '%house call veterinarian%' OR job_title LIKE '%mobile vet%') ${EXCLUDE}`,
   ];
 
   const dayOfYear = Math.floor((Date.now() - Date.UTC(new Date().getUTCFullYear(), 0, 0)) / 86400000);
