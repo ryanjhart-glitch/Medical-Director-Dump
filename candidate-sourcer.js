@@ -12,10 +12,12 @@ const EXCLUDED_NAMES = new Set([
   'kathleen bartos', 'joe richter', 'jason banaszak', 'rhea mccullough',
   'kenneth head', 'keith gordon', 'gordon smok', 'gina smith', 'kaisa young',
   'jasmine hanson', 'hope hunter', 'michael siggers', 'colleen fisher',
-  'celia friedman cowan', 'rosemary riley', 'nicole mcdonagh', 'ken thompson',
+  'celia friedman cowan', 'celia cowan',   // PDL returns both name variants
+  'rosemary riley', 'nicole mcdonagh', 'ken thompson',
   'bobbie mammato', 'billy dundon', 'david bradley', 'patricia van de coevering',
   'cassie brownell', 'nermin massoud', 'crystal bley', 'jason leszkowicz',
-  'kathleen marcus', 'catherine foret', 'julie oghigian', 'jennifer weddig morley',
+  'kathleen marcus', 'catherine foret', 'julie oghigian',
+  'jennifer weddig morley', 'jennifer morley',  // PDL returns both name variants
   'diego sobrino', 'alayson phelps', 'brooke certa', 'vanesa farmer',
   'killian lenahen', 'nellie wilbers', 'jason heitzman', 'suzanne michel',
   'liz mccalley', 'jenese williams', 'stephanie krick', 'maddie buddendorf',
@@ -112,23 +114,34 @@ async function fetchPDLCandidates() {
     AND job_title NOT LIKE '%receptionist%'
     AND location_country IN ('united states', 'canada')`;
 
+  // Four-years-ago cutoff for experience filtering (job_start_date <= this year)
+  const expCutoffYear = new Date().getUTCFullYear() - 4;
+
   const QUERIES = [
-    // Day 0 — Veterinary Medical Directors
-    `SELECT * FROM person WHERE (job_title LIKE '%veterinary medical director%' OR job_title LIKE '%vet medical director%') ${EXCLUDE}`,
+    // Day 0 — Veterinary Medical Directors (GP + general)
+    `SELECT * FROM person WHERE (job_title LIKE '%veterinary medical director%' OR job_title LIKE '%vet medical director%' OR job_title LIKE '%general practice medical director%') ${EXCLUDE}`,
     // Day 1 — Veterinary Chief of Staff
-    `SELECT * FROM person WHERE (job_title LIKE '%veterinary chief of staff%' OR job_title LIKE '%chief of staff%' AND job_title LIKE '%vet%') ${EXCLUDE}`,
-    // Day 2 — General licensed DVMs
-    `SELECT * FROM person WHERE job_title LIKE '%dvm%' ${EXCLUDE}`,
-    // Day 3 — Veterinarians (broad)
-    `SELECT * FROM person WHERE job_title LIKE '%veterinarian%' ${EXCLUDE}`,
-    // Day 4 — Equine specialists
-    `SELECT * FROM person WHERE (job_title LIKE '%equine%' OR job_title LIKE '%horse%' OR job_title LIKE '%large animal%') AND (job_title LIKE '%vet%' OR job_title LIKE '%dvm%') ${EXCLUDE}`,
-    // Day 5 — Relief / locum vets
-    `SELECT * FROM person WHERE (job_title LIKE '%relief vet%' OR job_title LIKE '%locum vet%' OR job_title LIKE '%relief dvm%' OR job_title LIKE '%per diem vet%') ${EXCLUDE}`,
-    // Day 6 — Veterinary Clinical Directors / Practice Owners
+    `SELECT * FROM person WHERE (job_title LIKE '%veterinary chief of staff%' OR (job_title LIKE '%chief of staff%' AND job_title LIKE '%vet%')) ${EXCLUDE}`,
+    // Day 2 — Relief veterinarians
+    `SELECT * FROM person WHERE (job_title LIKE '%relief veterinarian%' OR job_title LIKE '%relief dvm%' OR job_title LIKE '%relief vet%' OR job_title LIKE '%per diem veterinarian%' OR job_title LIKE '%per diem dvm%') ${EXCLUDE}`,
+    // Day 3 — Locum veterinarians
+    `SELECT * FROM person WHERE (job_title LIKE '%locum veterinarian%' OR job_title LIKE '%locum dvm%' OR job_title LIKE '%locum vet%' OR job_title LIKE '%locum tenens veterinarian%') ${EXCLUDE}`,
+    // Day 4 — Urgent care / emergency Medical Directors
+    `SELECT * FROM person WHERE (job_title LIKE '%urgent care%' OR job_title LIKE '%emergency%') AND (job_title LIKE '%medical director%' OR job_title LIKE '%vet%' OR job_title LIKE '%dvm%') ${EXCLUDE}`,
+    // Day 5 — Equine specialists
+    `SELECT * FROM person WHERE (job_title LIKE '%equine%' OR job_title LIKE '%large animal%' OR job_title LIKE '%equine practitioner%') AND (job_title LIKE '%vet%' OR job_title LIKE '%dvm%') ${EXCLUDE}`,
+    // Day 6 — DVMs with 4+ years in current role
+    `SELECT * FROM person WHERE job_title LIKE '%dvm%' AND job_start_date <= '${expCutoffYear}-12-31' ${EXCLUDE}`,
+    // Day 7 — Veterinarians with 4+ years in current role
+    `SELECT * FROM person WHERE job_title LIKE '%veterinarian%' AND job_start_date <= '${expCutoffYear}-12-31' ${EXCLUDE}`,
+    // Day 8 — Veterinary Clinical Directors / Practice Owners
     `SELECT * FROM person WHERE (job_title LIKE '%veterinary clinical director%' OR job_title LIKE '%veterinary practice owner%' OR job_title LIKE '%animal hospital director%') ${EXCLUDE}`,
-    // Day 7 — Veterinary Hospital / Practice Directors
-    `SELECT * FROM person WHERE (job_title LIKE '%veterinary hospital%' OR job_title LIKE '%animal medical center%' OR job_title LIKE '%veterinary director%') ${EXCLUDE}`,
+    // Day 9 — Veterinary Hospital / Practice Directors
+    `SELECT * FROM person WHERE (job_title LIKE '%veterinary hospital director%' OR job_title LIKE '%animal medical center%' OR job_title LIKE '%veterinary director%') ${EXCLUDE}`,
+    // Day 10 — General licensed DVMs (broad)
+    `SELECT * FROM person WHERE job_title LIKE '%dvm%' ${EXCLUDE}`,
+    // Day 11 — Veterinarians (broad)
+    `SELECT * FROM person WHERE job_title LIKE '%veterinarian%' ${EXCLUDE}`,
   ];
 
   const dayOfYear = Math.floor((Date.now() - Date.UTC(new Date().getUTCFullYear(), 0, 0)) / 86400000);
