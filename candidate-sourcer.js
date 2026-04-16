@@ -112,6 +112,17 @@ async function fetchPDLCandidates() {
     AND job_title NOT LIKE '%assistant%'
     AND job_title NOT LIKE '%nurse%'
     AND job_title NOT LIKE '%receptionist%'
+    AND job_title NOT LIKE '%recruiter%'
+    AND job_title NOT LIKE '%talent acquisition%'
+    AND job_title NOT LIKE '%3dvm%'
+    AND job_title NOT LIKE '%data volume%'
+    AND job_title NOT LIKE '%candidate%'
+    AND job_title NOT LIKE '%program manager%'
+    AND job_title NOT LIKE '%service manager%'
+    AND job_title NOT LIKE '%art director%'
+    AND job_title NOT LIKE '%store planning%'
+    AND job_title NOT LIKE '%marcom%'
+    AND job_title NOT LIKE '%product owner%'
     AND location_country IN ('united states', 'canada')`;
 
   // Date range helper — 5-6 YOE window (started between 2018 and 2021)
