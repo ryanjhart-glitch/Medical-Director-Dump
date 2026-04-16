@@ -138,9 +138,11 @@ async function fetchPDLCandidates() {
     `SELECT * FROM person WHERE (job_title LIKE '%veterinary clinical director%' OR job_title LIKE '%veterinary practice owner%' OR job_title LIKE '%animal hospital director%') ${EXCLUDE}`,
     // Day 9 — Veterinary Hospital / Practice Directors
     `SELECT * FROM person WHERE (job_title LIKE '%veterinary hospital director%' OR job_title LIKE '%animal medical center%' OR job_title LIKE '%veterinary director%') ${EXCLUDE}`,
-    // Day 10 — General licensed DVMs (broad)
+    // Day 10 — Lead / Senior / Managing / Head Veterinarians
+    `SELECT * FROM person WHERE (job_title LIKE '%lead veterinarian%' OR job_title LIKE '%senior veterinarian%' OR job_title LIKE '%managing veterinarian%' OR job_title LIKE '%head veterinarian%') ${EXCLUDE}`,
+    // Day 11 — General licensed DVMs (broad)
     `SELECT * FROM person WHERE job_title LIKE '%dvm%' ${EXCLUDE}`,
-    // Day 11 — Veterinarians (broad)
+    // Day 12 — Veterinarians (broad)
     `SELECT * FROM person WHERE job_title LIKE '%veterinarian%' ${EXCLUDE}`,
   ];
 
