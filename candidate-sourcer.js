@@ -114,8 +114,11 @@ async function fetchPDLCandidates() {
     AND job_title NOT LIKE '%receptionist%'
     AND location_country IN ('united states', 'canada')`;
 
-  // Four-years-ago cutoff for experience filtering (job_start_date <= this year)
-  const expCutoffYear = new Date().getUTCFullYear() - 4;
+  // Date range helpers for experience filtering via job_start_date
+  const currentYear = new Date().getUTCFullYear();
+  const expCutoffYear = currentYear - 4;   // 4+ years in role
+  const yoe3min = currentYear - 8;         // Associate DVM 3-8 YOE window: started 3-8 yrs ago
+  const yoe3max = currentYear - 3;
 
   const QUERIES = [
     // Day 0 — Veterinary Medical Directors (GP + general)
@@ -144,6 +147,10 @@ async function fetchPDLCandidates() {
     `SELECT * FROM person WHERE job_title LIKE '%dvm%' ${EXCLUDE}`,
     // Day 12 — Veterinarians (broad)
     `SELECT * FROM person WHERE job_title LIKE '%veterinarian%' ${EXCLUDE}`,
+    // Day 13 — Associate DVMs: 3-8 YOE, titles suggesting mentoring or surgical role
+    // PDL doesn't index mentoring/surgery skills directly, so we target title keywords
+    // that co-occur with those responsibilities (mentor, surgery, associate + date range).
+    `SELECT * FROM person WHERE (job_title LIKE '%associate veterinarian%' OR job_title LIKE '%associate dvm%') AND job_start_date >= '${yoe3min}-01-01' AND job_start_date <= '${yoe3max}-12-31' ${EXCLUDE}`,
   ];
 
   const dayOfYear = Math.floor((Date.now() - Date.UTC(new Date().getUTCFullYear(), 0, 0)) / 86400000);
