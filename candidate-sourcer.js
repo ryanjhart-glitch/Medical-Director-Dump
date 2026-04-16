@@ -170,6 +170,34 @@ async function fetchPDLCandidates() {
     `SELECT * FROM person WHERE (job_title LIKE '%exotic%' OR job_title LIKE '%avian%' OR job_title LIKE '%zoo%' OR job_title LIKE '%wildlife%') AND (job_title LIKE '%vet%' OR job_title LIKE '%dvm%') ${EXCLUDE}`,
     // Day 23 — Mobile veterinarians
     `SELECT * FROM person WHERE (job_title LIKE '%mobile veterinarian%' OR job_title LIKE '%mobile dvm%' OR job_title LIKE '%house call veterinarian%' OR job_title LIKE '%mobile vet%') ${EXCLUDE}`,
+    // Days 24-28 — "Open to work" overlay: PDL has no open_to_work flag (LinkedIn-only).
+    // currently_working = false is the closest equivalent — people between jobs who are
+    // actively available. Applied across the five highest-priority profile types.
+    // Day 24 — DVMs currently between jobs
+    `SELECT * FROM person WHERE job_title LIKE '%dvm%' AND currently_working = false ${EXCLUDE}`,
+    // Day 25 — Veterinarians currently between jobs
+    `SELECT * FROM person WHERE job_title LIKE '%veterinarian%' AND currently_working = false ${EXCLUDE}`,
+    // Day 26 — Medical Directors / Chief of Staff currently between jobs
+    `SELECT * FROM person WHERE (job_title LIKE '%medical director%' OR job_title LIKE '%chief of staff%') AND (job_title LIKE '%vet%' OR job_title LIKE '%dvm%' OR job_title LIKE '%animal%') AND currently_working = false ${EXCLUDE}`,
+    // Day 27 — Relief / locum vets currently between jobs
+    `SELECT * FROM person WHERE (job_title LIKE '%relief%' OR job_title LIKE '%locum%') AND (job_title LIKE '%vet%' OR job_title LIKE '%dvm%') AND currently_working = false ${EXCLUDE}`,
+    // Day 28 — Associate / lead / senior vets currently between jobs
+    `SELECT * FROM person WHERE (job_title LIKE '%associate veterinarian%' OR job_title LIKE '%lead veterinarian%' OR job_title LIKE '%senior veterinarian%') AND currently_working = false ${EXCLUDE}`,
+    // Days 29-34 — High-impact compound searches
+    // PDL indexes job titles and summary text; these target intent/role signals beyond title alone.
+    // Day 29 — Mentor + veterinarian (leadership-ready producers)
+    `SELECT * FROM person WHERE (job_title LIKE '%mentor%' OR job_summary LIKE '%mentor%') AND (job_title LIKE '%veterinarian%' OR job_title LIKE '%dvm%') ${EXCLUDE}`,
+    // Day 30 — Lead + veterinarian (team anchor candidates)
+    `SELECT * FROM person WHERE (job_title LIKE '%lead%' AND (job_title LIKE '%veterinarian%' OR job_title LIKE '%dvm%')) ${EXCLUDE}`,
+    // Day 31 — Surgery-heavy veterinarians (title signals)
+    `SELECT * FROM person WHERE (job_title LIKE '%surgery%' OR job_title LIKE '%surgical%' OR job_summary LIKE '%surgery%') AND (job_title LIKE '%veterinarian%' OR job_title LIKE '%dvm%') ${EXCLUDE}`,
+    // Day 32 — Trained interns / residents (vets with teaching/training roles)
+    `SELECT * FROM person WHERE (job_title LIKE '%intern%' OR job_title LIKE '%residency%' OR job_summary LIKE '%trained interns%' OR job_summary LIKE '%supervised residents%') AND (job_title LIKE '%vet%' OR job_title LIKE '%dvm%') ${EXCLUDE}`,
+    // Day 33 — Work-life balance / burnout signal (open to change)
+    // job_summary is a PDL field that surfaces LinkedIn About section text.
+    `SELECT * FROM person WHERE (job_summary LIKE '%work-life balance%' OR job_summary LIKE '%burnout%' OR job_summary LIKE '%new opportunity%' OR job_summary LIKE '%open to opportunities%') AND (job_title LIKE '%veterinarian%' OR job_title LIKE '%dvm%') ${EXCLUDE}`,
+    // Day 34 — High-volume producers (patient volume signals in summary)
+    `SELECT * FROM person WHERE (job_summary LIKE '%patients per day%' OR job_summary LIKE '%high volume%' OR job_summary LIKE '%busy practice%') AND (job_title LIKE '%veterinarian%' OR job_title LIKE '%dvm%') ${EXCLUDE}`,
   ];
 
   const dayOfYear = Math.floor((Date.now() - Date.UTC(new Date().getUTCFullYear(), 0, 0)) / 86400000);
