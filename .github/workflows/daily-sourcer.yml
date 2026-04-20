@@ -5,6 +5,10 @@ on:
     - cron: '0 12 * * *'  # Runs at 7 AM Eastern / 6 AM Central every day
   workflow_dispatch:       # Lets you run it manually from GitHub with a button click
 
+concurrency:
+  group: daily-sourcer
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
