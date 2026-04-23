@@ -324,10 +324,31 @@ async function fetchPDLCandidates() {
   ];
 
   const dayOfYear = Math.floor((Date.now() - Date.UTC(new Date().getUTCFullYear(), 0, 0)) / 86400000);
-  const sqlQuery = QUERIES[dayOfYear % QUERIES.length];
-  console.log(`People Data Labs: using query variant ${dayOfYear % QUERIES.length} (day ${dayOfYear})`);
+  const queryIndex = dayOfYear % QUERIES.length;
+  const sqlQuery = QUERIES[queryIndex];
+  console.log(`People Data Labs: using query variant ${queryIndex} (day ${dayOfYear})`);
 
-  const body = JSON.stringify({ sql: sqlQuery, size: 25, pretty: false });
+  // Load persisted scroll tokens (one per query variant) so each daily run gets
+  // a fresh page of 25 candidates instead of repeating the same top-25.
+  const tokenFile = path.join(__dirname, 'pdl-scroll-tokens.json');
+  let scrollTokens = {};
+  try {
+    if (fs.existsSync(tokenFile)) {
+      scrollTokens = JSON.parse(fs.readFileSync(tokenFile, 'utf8'));
+    }
+  } catch (e) {
+    scrollTokens = {};
+  }
+
+  const payload = { sql: sqlQuery, size: 25, pretty: false };
+  if (scrollTokens[queryIndex]) {
+    payload.scroll_token = scrollTokens[queryIndex];
+    console.log(`   Using saved scroll_token for query ${queryIndex} (continuing from last page)`);
+  } else {
+    console.log(`   No scroll_token for query ${queryIndex} — fetching from page 1`);
+  }
+
+  const body = JSON.stringify(payload);
 
   return new Promise((resolve) => {
     const req = https.request({
@@ -348,10 +369,26 @@ async function fetchPDLCandidates() {
           const json = JSON.parse(data);
           if (res.statusCode !== 200) {
             console.log('PDL error:', json.error || json.message || JSON.stringify(json));
+            // If scroll_token is stale/invalid, clear it so next run starts fresh
+            if (scrollTokens[queryIndex]) {
+              delete scrollTokens[queryIndex];
+              try { fs.writeFileSync(tokenFile, JSON.stringify(scrollTokens, null, 2)); } catch (_) {}
+            }
             resolve([]);
             return;
           }
           const people = json.data || [];
+
+          // Save the new scroll_token for next run of this query variant.
+          // If PDL returns empty results, the token is exhausted — reset to page 1.
+          if (people.length === 0) {
+            console.log(`   Query ${queryIndex} exhausted — resetting to page 1 next run`);
+            delete scrollTokens[queryIndex];
+          } else if (json.scroll_token) {
+            scrollTokens[queryIndex] = json.scroll_token;
+          }
+          try { fs.writeFileSync(tokenFile, JSON.stringify(scrollTokens, null, 2)); } catch (_) {}
+
           const candidates = people.map(p => ({
             name: p.full_name || 'Unknown',
             title: p.job_title || 'Veterinarian',
